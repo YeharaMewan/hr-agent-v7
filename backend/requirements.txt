@@ -1,0 +1,40 @@
+# Core FastAPI and server dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-dotenv==1.0.0
+requests==2.31.0
+python-multipart
+
+# Database dependencies
+psycopg2-binary==2.9.10
+
+# Production LangChain stack - Required dependencies
+pydantic>=2.5.0
+
+# Core LangChain packages (updated for compatibility)
+langchain==0.2.16
+langchain-core>=0.2.38
+langchain-community==0.2.16
+langchain-openai==0.1.23
+
+# LangGraph for agent workflow
+langgraph==0.2.27
+langgraph-checkpoint-sqlite>=1.0.0
+
+# Production optimizations
+langsmith>=0.0.85  # For monitoring and observability
+tenacity>=8.2.0    # For retry logic
+aiohttp>=3.8.0     # For async HTTP operations
+
+# Security and validation
+cryptography>=41.0.0
+pyjwt>=2.8.0
+
+# Performance monitoring
+prometheus-client>=0.17.0
+
+# Development dependencies (optional)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.0.0
