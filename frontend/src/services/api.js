@@ -238,6 +238,111 @@ class ApiService {
     }
   }
 
+  // Employee Management API methods
+
+  /**
+   * Create a new employee via intelligent agent
+   * @param {Object} employeeData - Employee creation data (query, name, email, role, department, phone_number, address)
+   * @returns {Promise<Object>} Response from server
+   */
+  async createEmployee(employeeData) {
+    try {
+      const response = await fetch(`${this.baseURL}/tools/create_employee_intelligent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(employeeData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Create Employee Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an employee via intelligent agent
+   * @param {Object} updateData - Employee update data (query, employee_identifier, field_updates, update_reason)
+   * @returns {Promise<Object>} Response from server
+   */
+  async updateEmployee(updateData) {
+    try {
+      const response = await fetch(`${this.baseURL}/tools/update_employee_intelligent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Update Employee Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Search for employees in management context
+   * @param {string} query - Search query (name, email, ID, or natural language)
+   * @returns {Promise<Object>} Search results with suggestions
+   */
+  async searchEmployeeForManagement(query) {
+    try {
+      const response = await fetch(`${this.baseURL}/tools/search_employee_for_management`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Search Employee Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get form data for frontend (departments, roles, validation rules)
+   * @returns {Promise<Object>} Form configuration data
+   */
+  async getFormData() {
+    try {
+      const response = await fetch(`${this.baseURL}/tools/get_form_data_for_frontend`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Get Form Data Error:', error);
+      throw error;
+    }
+  }
+
   /**
    * Parse Server-Sent Events from streaming response
    * @param {Response} response - The streaming response

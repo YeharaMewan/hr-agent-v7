@@ -5,8 +5,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: hr_backend
+    env_file:
+      - ./backend/.env
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PYTHONPATH=/app
     ports:
       - "8000:8000"

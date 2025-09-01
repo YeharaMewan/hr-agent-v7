@@ -1,12 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import MessageBubble from '../MessageBubble/MessageBubble';
 import SuggestionChips from '../SuggestionChips/SuggestionChips';
+import EmployeeFormModal from '../EmployeeFormModal/EmployeeFormModal';
 import { apiService } from '../../services/api';
 
 const ChatView = ({ messages, setMessages }) => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [chipsHidden, setChipsHidden] = useState(false);
+  const [isEmployeeFormOpen, setIsEmployeeFormOpen] = useState(false);
+  const [employeeFormData, setEmployeeFormData] = useState(null);
+  const [employeeFormAction, setEmployeeFormAction] = useState('');
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -66,6 +70,15 @@ const ChatView = ({ messages, setMessages }) => {
           if (data.type === 'chart') {
             updateMessageWithChart(loadingMessage.id, data.payload);
           } else if (data.type === 'text') {
+            updateMessageWithText(loadingMessage.id, data.content);
+          } else if (data.type === 'form_request') {
+            // Handle form request - show employee form modal
+            handleFormRequest(data);
+            // Also update the message to show the form was triggered
+            updateMessageWithText(loadingMessage.id, data.content || 'Opening employee form...');
+          } else if (data.type === 'employee_not_found_create_offer') {
+            // Handle employee not found - show create offer and potentially open form
+            handleEmployeeNotFoundOffer(data);
             updateMessageWithText(loadingMessage.id, data.content);
           }
         },
@@ -139,6 +152,68 @@ const ChatView = ({ messages, setMessages }) => {
       }
       return msg;
     }));
+  };
+
+  // Employee form handling functions
+  const handleFormRequest = (data) => {
+    console.log('Form request received:', data);
+    
+    // Extract form data from the response (backend sends form_data directly now)
+    const formData = data.form_data || data.payload?.form_data || {};
+    const action = data.action || data.payload?.action || 'create_employee';
+    
+    console.log('Extracted form data:', formData);
+    console.log('Action:', action);
+    
+    setEmployeeFormData(formData);
+    setEmployeeFormAction(action);
+    setIsEmployeeFormOpen(true);
+  };
+
+  const handleEmployeeNotFoundOffer = (data) => {
+    console.log('Employee not found offer:', data);
+    
+    // Could show a different UI for this case, but for now we'll just show the message
+    // In the future, could add a button to trigger form creation
+  };
+
+  const handleFormSubmitSuccess = (response) => {
+    console.log('Form submitted successfully:', response);
+    
+    // Add a success message to the chat
+    const successMessage = {
+      id: Date.now(),
+      content: response.message || 'Employee record updated successfully!',
+      isUser: false,
+      timestamp: new Date(),
+      isSuccess: true
+    };
+    
+    setMessages(prev => [...prev, successMessage]);
+    
+    // Close the form
+    setIsEmployeeFormOpen(false);
+  };
+
+  const handleFormSubmitError = (error) => {
+    console.error('Form submission error:', error);
+    
+    // Add an error message to the chat
+    const errorMessage = {
+      id: Date.now(),
+      content: error.message || 'An error occurred while processing the form. Please try again.',
+      isUser: false,
+      timestamp: new Date(),
+      isError: true
+    };
+    
+    setMessages(prev => [...prev, errorMessage]);
+  };
+
+  const handleFormClose = () => {
+    setIsEmployeeFormOpen(false);
+    setEmployeeFormData(null);
+    setEmployeeFormAction('');
   };
 
 
@@ -263,6 +338,16 @@ const ChatView = ({ messages, setMessages }) => {
           </form>
         </div>
       </div>
+
+      {/* Employee Form Modal */}
+      <EmployeeFormModal
+        isOpen={isEmployeeFormOpen}
+        onClose={handleFormClose}
+        formData={employeeFormData}
+        action={employeeFormAction}
+        onSubmitSuccess={handleFormSubmitSuccess}
+        onSubmitError={handleFormSubmitError}
+      />
     </div>
   );
 };

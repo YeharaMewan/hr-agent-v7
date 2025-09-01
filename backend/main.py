@@ -126,14 +126,13 @@ from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.runnables.config import RunnableConfig
 
 from database import execute_query, get_db_connection, search_similar_documents
 from models import (
     Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
-    Attendance, AttendanceCreate, AttendanceMarkRequest, AttendanceQuery,
+    Attendance, AttendanceCreate, AttendanceQuery,
     Task, TaskCreate, TaskWithDetails, TaskQuery,
     Department, ChatMessage, APIResponse, AttendanceStatistics
 )
@@ -171,1027 +170,623 @@ except Exception as e:
 # LANGCHAIN TOOLS FOR HR AGENT
 # ==============================================================================
 
-@tool
-def mark_attendance(employee_identifier: str, status: str = "Present", notes: str = "", attendance_date: str = "") -> Dict[str, Any]:
-    """
-    Marks attendance for an employee. You can use either employee ID (number) or employee name.
-    Status options: Present, Work from home, Planned Leave, Sudden Leave, Medical Leave, Holiday Leave, Lieu leave, Work from out of Rise
-    If attendance_date is not provided, uses today's date. Format: YYYY-MM-DD
-    """
-    try:
-            # Validate status
-        valid_statuses = ["Present", "Work from home", "Planned Leave", "Sudden Leave", 
-                        "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"]
-        if status not in valid_statuses:
-            return {
-                "success": False, 
-                "message": f"Invalid status. Valid options: {', '.join(valid_statuses)}"
-            }
-        
-            # Determine if identifier is ID or name
-        employee = None
-        if employee_identifier.isdigit():
-                # Lookup by ID
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
-            )
-        else:
-                # Lookup by name (fuzzy matching)
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
-            )
-        
-        if not employee:
-            return {"success": False, "message": f"Employee '{employee_identifier}' not found or inactive."}
-        
-        if len(employee) > 1:
-                # Multiple matches found
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            return {
-                "success": False, 
-                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
-            }
-        
-        employee_data = employee[0]
-        employee_id = employee_data['id']
-        employee_name = employee_data['name']
-        
-            # Parse date
-        if attendance_date:
-            try:
-                target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
-            except ValueError:
-                return {"success": False, "message": "Invalid date format. Please use YYYY-MM-DD format."}
-        else:
-            target_date = date.today()
-        
-            # Check if attendance already marked for the date
-        existing = execute_query(
-            "SELECT id, status FROM attendances WHERE employee_id = %s AND attendance_date = %s",
-            (employee_id, target_date)
-        )
-        
-        if existing:
-            old_status = existing[0]['status']
-                # Update existing record
-            execute_query(
-                "UPDATE attendances SET status = %s WHERE employee_id = %s AND attendance_date = %s",
-                (status, employee_id, target_date),
-                fetch=False
-            )
-            action = "updated"
-            message = f"Attendance for {employee_name} successfully {action} from '{old_status}' to '{status}' for {target_date.strftime('%Y-%m-%d')}."
-        else:
-                # Create new record
-            execute_query(
-                "INSERT INTO attendances (employee_id, attendance_date, status) VALUES (%s, %s, %s)",
-                (employee_id, target_date, status),
-                fetch=False
-            )
-            action = "marked"
-            message = f"Attendance for {employee_name} successfully {action} as '{status}' for {target_date.strftime('%Y-%m-%d')}."
-        
-        return {
-            "success": True, 
-            "message": message,
-            "employee_name": employee_name,
-            "employee_id": employee_id,
-            "status": status,
-            "date": target_date.strftime('%Y-%m-%d'),
-            "action": action
-        }
-        
-    except Exception as e:
-        return {"success": False, "message": f"Error marking attendance: {e}"}
+# ==============================================================================
+# ENHANCED EMPLOYEE QUERY TOOLS
+# ==============================================================================
 
 @tool
-def update_attendance_history(employee_identifier: str, attendance_date: str, new_status: str, reason: str = "") -> Dict[str, Any]:
+def query_employee_details_intelligent(query: str) -> Dict[str, Any]:
     """
-    Updates a specific past attendance record for an employee. Use this when you need to modify attendance for a specific date.
-    employee_identifier can be either employee ID (number) or employee name.
-    attendance_date format: YYYY-MM-DD
-    Status options: Present, Work from home, Planned Leave, Sudden Leave, Medical Leave, Holiday Leave, Lieu leave, Work from out of Rise
-    """
-    try:
-            # Validate status
-        valid_statuses = ["Present", "Work from home", "Planned Leave", "Sudden Leave", 
-                        "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"]
-        if new_status not in valid_statuses:
-            return {
-                "success": False, 
-                "message": f"Invalid status. Valid options: {', '.join(valid_statuses)}"
-            }
-        
-            # Parse and validate date
-        try:
-            target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
-        except ValueError:
-            return {"success": False, "message": "Invalid date format. Please use YYYY-MM-DD format."}
-        
-            # Determine if identifier is ID or name
-        employee = None
-        if employee_identifier.isdigit():
-                # Lookup by ID
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
-            )
-        else:
-                # Lookup by name (fuzzy matching)
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
-            )
-        
-        if not employee:
-            return {"success": False, "message": f"Employee '{employee_identifier}' not found or inactive."}
-        
-        if len(employee) > 1:
-                # Multiple matches found
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            return {
-                "success": False, 
-                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
-            }
-        
-        employee_data = employee[0]
-        employee_id = employee_data['id']
-        employee_name = employee_data['name']
-        
-            # Check if attendance record exists for the date
-        existing = execute_query(
-            "SELECT id, status FROM attendances WHERE employee_id = %s AND attendance_date = %s",
-            (employee_id, target_date)
-        )
-        
-        if not existing:
-            return {
-                "success": False, 
-                "message": f"No attendance record found for {employee_name} on {target_date.strftime('%Y-%m-%d')}. Use mark_attendance to create a new record."
-            }
-        
-        old_status = existing[0]['status']
-        
-            # Update the record
-        execute_query(
-            "UPDATE attendances SET status = %s WHERE employee_id = %s AND attendance_date = %s",
-            (new_status, employee_id, target_date),
-            fetch=False
-        )
-        
-        message = f"Attendance for {employee_name} on {target_date.strftime('%Y-%m-%d')} successfully updated from '{old_status}' to '{new_status}'."
-        if reason:
-            message += f" Reason: {reason}"
-        
-        return {
-            "success": True, 
-            "message": message,
-            "employee_name": employee_name,
-            "employee_id": employee_id,
-            "date": target_date.strftime('%Y-%m-%d'),
-            "old_status": old_status,
-            "new_status": new_status,
-            "reason": reason
-        }
-        
-    except Exception as e:
-        return {"success": False, "message": f"Error updating attendance history: {e}"}
-
-@tool
-def get_employee_attendance_summary(employee_identifier: str, days: int = 30) -> Dict[str, Any]:
-    """
-    Get a comprehensive attendance summary for a specific employee including statistics, patterns, and insights.
-    employee_identifier can be either employee ID (number) or employee name.
-    days parameter specifies the number of days to look back (default: 30 days).
-    """
-    try:
-            # Determine if identifier is ID or name
-        employee = None
-        if employee_identifier.isdigit():
-                # Lookup by ID
-            employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
-            )
-        else:
-                # Lookup by name (fuzzy matching)
-            employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
-            )
-        
-        if not employee:
-            return {"success": False, "message": f"Employee '{employee_identifier}' not found or inactive."}
-        
-        if len(employee) > 1:
-                # Multiple matches found
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            return {
-                "success": False, 
-                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
-            }
-        
-        employee_data = employee[0]
-        employee_id = employee_data['id']
-        employee_name = employee_data['name']
-        employee_role = employee_data['role']
-        
-            # Calculate date range
-        start_date = date.today() - timedelta(days=days)
-        end_date = date.today()
-        
-            # Get attendance records for the period
-        attendance_records = execute_query("""
-            SELECT attendance_date, status 
-            FROM attendances 
-            WHERE employee_id = %s AND attendance_date >= %s AND attendance_date <= %s
-            ORDER BY attendance_date DESC
-        """, (employee_id, start_date, end_date))
-        
-        if not attendance_records:
-            return {
-                "success": True,
-                "message": f"No attendance records found for {employee_name} in the last {days} days.",
-                "employee_name": employee_name,
-                "summary": f"**📊 Attendance Summary for {employee_name}**\n\nNo attendance records found for the last {days} days."
-            }
-        
-            # Calculate statistics
-        total_records = len(attendance_records)
-        status_counts = {}
-        recent_pattern = []
-        
-        for record in attendance_records:
-            status = record['status']
-            status_counts[status] = status_counts.get(status, 0) + 1
-            
-                # Keep track of recent 7 days for pattern analysis
-            if len(recent_pattern) < 7:
-                recent_pattern.append({
-                    'date': record['attendance_date'].strftime('%Y-%m-%d (%a)'),
-                    'status': status
-                })
-        
-            # Calculate percentages
-        status_percentages = {
-            status: round((count / total_records) * 100, 1)
-            for status, count in status_counts.items()
-        }
-        
-            # Generate insights
-        present_count = status_counts.get('Present', 0)
-        wfh_count = status_counts.get('Work from home', 0)
-        leave_types = ['Planned Leave', 'Sudden Leave', 'Medical Leave', 'Holiday Leave', 'Lieu leave']
-        total_leaves = sum(status_counts.get(leave_type, 0) for leave_type in leave_types)
-        
-        attendance_rate = round(((present_count + wfh_count) / total_records) * 100, 1) if total_records > 0 else 0
-        
-            # Build comprehensive summary
-        summary_lines = [
-            f"Attendance Summary for {employee_name} ({employee_role.title()})",
-            "-" * 50,
-            f"Period: Last {days} days ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})",
-            f"Total Records: {total_records}",
-            f"Attendance Rate: {attendance_rate}% (Present + WFH)",
-            "",
-            "Status Breakdown:"
-        ]
-        
-            # Add status breakdown
-        for status, count in sorted(status_counts.items(), key=lambda x: x[1], reverse=True):
-            percentage = status_percentages[status]
-            summary_lines.append(f"- {status}: {count} days ({percentage}%)")
-        
-        summary_lines.extend(["", "Recent Activity (Last 7 Days):"])
-        
-            # Add recent pattern
-        for day in recent_pattern:
-            summary_lines.append(f"  - {day['date']}: {day['status']}")
-        
-            # Add insights
-        summary_lines.extend(["", "Insights:"])
-        
-        if attendance_rate >= 90:
-            summary_lines.append("  - Excellent attendance record!")
-        elif attendance_rate >= 75:
-            summary_lines.append("  - Good attendance record.")
-        else:
-            summary_lines.append("  - Attendance below expectations.")
-        
-        if total_leaves > 0:
-            summary_lines.append(f"  - Total leave days: {total_leaves}")
-        
-        if wfh_count > 0:
-            wfh_percentage = round((wfh_count / total_records) * 100, 1)
-            summary_lines.append(f"  - Work from home: {wfh_percentage}% of working days")
-        
-        return {
-            "success": True,
-            "message": f"Attendance summary generated for {employee_name}",
-            "employee_name": employee_name,
-            "employee_id": employee_id,
-            "employee_role": employee_role,
-            "period_days": days,
-            "total_records": total_records,
-            "attendance_rate": attendance_rate,
-            "status_breakdown": status_counts,
-            "status_percentages": status_percentages,
-            "recent_pattern": recent_pattern,
-            "summary": "\n".join(summary_lines)
-        }
-        
-    except Exception as e:
-        return {"success": False, "message": f"Error generating attendance summary: {e}"}
-
-@tool
-def get_attendance_insights(department: str = None, days: int = 30, analysis_type: str = "general") -> Dict[str, Any]:
-    """
-    Provides AI-powered insights and pattern analysis on attendance data.
-    department: Filter by specific department (optional)
-    days: Number of days to analyze (default: 30)
-    """
-    try:
-            # Calculate date range
-        start_date = date.today() - timedelta(days=days)
-        end_date = date.today()
-        
-            # Build base query with optional department filter
-        where_conditions = ["a.attendance_date >= %s AND a.attendance_date <= %s"]
-        params = [start_date, end_date]
-        
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-            # Get comprehensive attendance data
-        query = f"""
-            SELECT a.attendance_date, a.status, e.name as employee_name, 
-                   e.role, d.name as department_name,
-                   EXTRACT(dow FROM a.attendance_date) as day_of_week,
-                   EXTRACT(week FROM a.attendance_date) as week_number
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC
-        """
-        
-        records = execute_query(query, params)
-        
-        if not records:
-            return {
-                "success": False,
-                "message": f"No attendance data found for the specified criteria in the last {days} days."
-            }
-        
-            # Perform different types of analysis based on analysis_type
-        insights = []
-        statistics = {}
-        
-            # Basic statistics
-        total_records = len(records)
-        unique_employees = len(set(r['employee_name'] for r in records))
-        departments_analyzed = list(set(r['department_name'] for r in records))
-        
-            # Status distribution
-        status_counts = {}
-        for record in records:
-            status = record['status']
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-            # Day-of-week analysis
-        dow_analysis = {}
-        dow_names = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 
-                    4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
-        
-        for record in records:
-            dow = int(record['day_of_week'])
-            dow_name = dow_names[dow]
-            if dow_name not in dow_analysis:
-                dow_analysis[dow_name] = {'total': 0, 'present': 0, 'wfh': 0, 'leave': 0}
-            
-            dow_analysis[dow_name]['total'] += 1
-            if record['status'] == 'Present':
-                dow_analysis[dow_name]['present'] += 1
-            elif record['status'] == 'Work from home':
-                dow_analysis[dow_name]['wfh'] += 1
-            else:
-                dow_analysis[dow_name]['leave'] += 1
-        
-            # Department-wise analysis
-        dept_analysis = {}
-        for record in records:
-            dept = record['department_name']
-            if dept not in dept_analysis:
-                dept_analysis[dept] = {'total': 0, 'present': 0, 'wfh': 0, 'leave': 0}
-            
-            dept_analysis[dept]['total'] += 1
-            if record['status'] == 'Present':
-                dept_analysis[dept]['present'] += 1
-            elif record['status'] == 'Work from home':
-                dept_analysis[dept]['wfh'] += 1
-            else:
-                dept_analysis[dept]['leave'] += 1
-        
-            # Role-based analysis
-        role_analysis = {}
-        for record in records:
-            role = record['role']
-            if role not in role_analysis:
-                role_analysis[role] = {'total': 0, 'present': 0, 'wfh': 0, 'leave': 0}
-            
-            role_analysis[role]['total'] += 1
-            if record['status'] == 'Present':
-                role_analysis[role]['present'] += 1
-            elif record['status'] == 'Work from home':
-                role_analysis[role]['wfh'] += 1
-            else:
-                role_analysis[role]['leave'] += 1
-        
-            # Generate insights based on analysis type
-        if analysis_type == "general" or analysis_type == "trends":
-            insights.extend([
-                "📊 **General Attendance Insights:**",
-                f"• Analyzed {total_records} attendance records from {unique_employees} employees",
-                f"• Departments covered: {', '.join(departments_analyzed)}",
-                ""
-            ])
-            
-                # Overall attendance rate
-            present_wfh = status_counts.get('Present', 0) + status_counts.get('Work from home', 0)
-            overall_rate = round((present_wfh / total_records) * 100, 1)
-            insights.append(f"• **Overall Attendance Rate:** {overall_rate}%")
-            
-                # Best and worst days
-            best_dow = max(dow_analysis.keys(), key=lambda x: (dow_analysis[x]['present'] + dow_analysis[x]['wfh']) / dow_analysis[x]['total'])
-            worst_dow = min(dow_analysis.keys(), key=lambda x: (dow_analysis[x]['present'] + dow_analysis[x]['wfh']) / dow_analysis[x]['total'])
-            
-            insights.extend([
-                f"• **Best Attendance Day:** {best_dow}",
-                f"• **Challenging Attendance Day:** {worst_dow}",
-                ""
-            ])
-        
-        if analysis_type == "general" or analysis_type == "departments":
-            insights.append("🏢 **Department Performance:**")
-            for dept, data in sorted(dept_analysis.items(), key=lambda x: x[1]['total'], reverse=True):
-                rate = round(((data['present'] + data['wfh']) / data['total']) * 100, 1) if data['total'] > 0 else 0
-                insights.append(f"• **{dept}:** {rate}% attendance rate ({data['total']} records)")
-            insights.append("")
-        
-        if analysis_type == "general" or analysis_type == "roles":
-            insights.append("👥 **Role-based Analysis:**")
-            for role, data in sorted(role_analysis.items(), key=lambda x: x[1]['total'], reverse=True):
-                rate = round(((data['present'] + data['wfh']) / data['total']) * 100, 1) if data['total'] > 0 else 0
-                insights.append(f"• **{role.title()}s:** {rate}% attendance rate ({data['total']} records)")
-            insights.append("")
-        
-        if analysis_type == "general" or analysis_type == "anomalies":
-            insights.append("🔍 **Pattern Observations:**")
-            
-                # Work from home patterns
-            wfh_percentage = round((status_counts.get('Work from home', 0) / total_records) * 100, 1)
-            if wfh_percentage > 20:
-                insights.append(f"• High WFH adoption: {wfh_percentage}% of all records")
-            elif wfh_percentage > 10:
-                insights.append(f"• Moderate WFH usage: {wfh_percentage}% of all records")
-            else:
-                insights.append(f"• Low WFH usage: {wfh_percentage}% of all records")
-            
-                # Leave patterns
-            total_leaves = sum(status_counts.get(leave_type, 0) for leave_type in 
-                             ['Planned Leave', 'Sudden Leave', 'Medical Leave', 'Holiday Leave', 'Lieu leave'])
-            leave_percentage = round((total_leaves / total_records) * 100, 1)
-            
-            if leave_percentage > 15:
-                insights.append(f"• High leave rate detected: {leave_percentage}% of records")
-            elif leave_percentage < 5:
-                insights.append(f"• Low leave rate: {leave_percentage}% - employees might need encouragement to take breaks")
-            else:
-                insights.append(f"• Normal leave pattern: {leave_percentage}% of records")
-            
-            insights.append("")
-        
-            # Build summary report
-        summary_lines = [
-            f"🔍 **Attendance Insights Analysis** ({analysis_type.title()})",
-            "=" * 60,
-            f"**Analysis Period:** Last {days} days ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})",
-            f"**Scope:** {department if department else 'All Departments'}",
-            ""
-        ] + insights
-        
-            # Add recommendations
-        summary_lines.extend([
-            "💡 **Recommendations:**",
-            f"• Monitor departments with attendance rates below 85%",
-            f"• Consider flexible work arrangements if WFH requests are high",
-            f"• Review leave policies if leave rates are unusually high or low",
-            f"• Focus on improving {worst_dow} attendance patterns",
-            ""
-        ])
-        
-        return {
-            "success": True,
-            "message": f"Attendance insights generated for {analysis_type} analysis",
-            "analysis_type": analysis_type,
-            "period_days": days,
-            "total_records": total_records,
-            "unique_employees": unique_employees,
-            "departments": departments_analyzed,
-            "overall_attendance_rate": overall_rate,
-            "status_distribution": status_counts,
-            "day_of_week_analysis": dow_analysis,
-            "department_analysis": dept_analysis,
-            "role_analysis": role_analysis,
-            "insights_summary": "\n".join(summary_lines)
-        }
-        
-    except Exception as e:
-        return {"success": False, "message": f"Error generating attendance insights: {e}"}
-
-@tool
-def get_attendance_report(employee_name: str = None, department: str = None, 
-                         start_date_str: str = None, end_date_str: str = None, 
-                         status: str = None, days: int = 7, report_type: str = "detailed",
-                         include_trends: bool = True) -> str:
-    """
-    Fetches a comprehensive attendance report with filtering and trend analysis.
+    Intelligent employee query tool that understands natural language requests about employees.
+    
+    Handles queries like:
+    - "AI department employees" / "show me marketing team"
+    - "give me Simon details" / "John's information"
+    - "employees who are leaders" / "all HR staff"
+    - "leaders in AI department" / "employees working in ramstudios"
+    - "all employees" / "show me everyone"
+    
+    Uses smart response patterns:
+    - Individual queries (1 person): Full details immediately
+    - Small groups (2-10): Show basic details, offer more info
+    - Large groups (>10): Summary first, then ask for specifics
+    - Department queries: Names first, then ask for individual details
     
     Parameters:
-    - employee_name: Filter by employee name (supports partial matching)
-    - department: Filter by department name (supports partial matching)  
-    - start_date_str, end_date_str: Date range (YYYY-MM-DD format)
-    - status: Filter by specific attendance status
-    - days: Number of days to look back (default: 7)
+    - query: Natural language query about employees
+    
+    Returns:
+    - success: bool
+    - message: Human-readable summary
+    - data: Employee data (varies based on query type)
+    - response_type: "individual", "small_group", "summary", "department_list"
+    - follow_up_questions: Suggested next actions
+    - total_found: Number of employees found
     """
     try:
-            # Build query conditions
-        where_conditions = []
-        params = []
+        import re
         
-            # Date range logic
-        if start_date_str and end_date_str:
-            where_conditions.append("a.attendance_date >= %s AND a.attendance_date <= %s")
-            params.extend([start_date_str, end_date_str])
-            period_start = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-            period_end = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-        elif start_date_str:
-            where_conditions.append("a.attendance_date >= %s")
-            params.append(start_date_str)
-            period_start = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-            period_end = date.today()
-        else:
-                # Default to last N days
-            period_start = date.today() - timedelta(days=days)
-            period_end = date.today()
-            where_conditions.append("a.attendance_date >= %s")
-            params.append(period_start)
+        # Initialize query parameters
+        department = None
+        role = None
+        employee_name = None
+        query_type = "general"  # individual, department, role, general, all_employees
         
-            # Employee filtering
-        if employee_name:
-            where_conditions.append("e.name ILIKE %s")
-            params.append(f"%{employee_name}%")
+        query_lower = query.lower().strip()
         
-            # Department filtering
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
+        # Detect query intent
+        if any(phrase in query_lower for phrase in ['all employee', 'everyone', 'show me all', 'entire company']):
+            query_type = "all_employees"
+        elif any(phrase in query_lower for phrase in ['details', 'information', 'info about', 'give me']) and not any(dept in query_lower for dept in ['department', 'team']):
+            query_type = "individual"
+        elif any(phrase in query_lower for phrase in ['department', 'team', 'dept']):
+            query_type = "department"
+        elif any(phrase in query_lower for phrase in ['leader', 'hr', 'employee', 'staff']):
+            query_type = "role"
         
-            # Status filtering
-        if status:
-            where_conditions.append("a.status = %s")
-            params.append(status)
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-        
-            # Enhanced query with additional data for trends
-        query = f"""
-            SELECT a.attendance_date, a.status, e.name as employee_name, 
-                   d.name as department_name, e.role, e.id as employee_id,
-                   EXTRACT(dow FROM a.attendance_date) as day_of_week,
-                   EXTRACT(week FROM a.attendance_date) as week_number
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC, e.name
-        """
-        
-        # Debug logging for query execution
-        logger.info(f"Executing attendance query with {len(params)} parameters")
-        logger.debug(f"Query: {query}")
-        logger.debug(f"Parameters: {params}")
-        
-        try:
-            records = execute_query(query, params)
-            logger.info(f"Query returned {len(records) if records else 0} records")
-            
-            # Log sample data for debugging
-            if records and len(records) > 0:
-                sample_record = records[0]
-                logger.debug(f"Sample record: {sample_record}")
-                
-                # Check for day_of_week values
-                dow_values = [r.get('day_of_week') for r in records[:5]]
-                logger.debug(f"First 5 day_of_week values: {dow_values}")
-                
-        except Exception as e:
-            logger.error(f"Query execution failed: {e}")
-            return f"Database error occurred while fetching attendance data: {e}"
-        
-        if not records:
-            logger.warning(f"No attendance records found for period {period_start} to {period_end}")
-            return "No attendance records found for the specified criteria. This could indicate:\n" + \
-                   "• No data exists for the specified date range\n" + \
-                   "• Filters are too restrictive\n" + \
-                   "• Database connectivity issues\n" + \
-                   f"Use the debug endpoint: /debug/attendance?days={days} for more details."
-        
-        try:
-            # Basic statistics with error handling
-            total_records = len(records)
-            unique_employees = len(set(rec.get('employee_name', 'Unknown') for rec in records if rec.get('employee_name')))
-            unique_dates = len(set(rec.get('attendance_date') for rec in records if rec.get('attendance_date')))
-            unique_departments = len(set(rec.get('department_name', 'Unknown') for rec in records if rec.get('department_name')))
-            
-            logger.info(f"Processing attendance data: {total_records} records, {unique_employees} employees, {unique_dates} dates")
-            
-        except Exception as e:
-            logger.error(f"Error processing basic statistics: {e}")
-            return f"Error processing attendance data: {e}. Please check the debug endpoint for more details."
-        
-            # Status distribution
-        status_counts = {}
-        for record in records:
-            status = record['status']
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-            # Calculate attendance rate with standardized status classification
-        present_count = (status_counts.get('Present', 0) + 
-                        status_counts.get('Work from home', 0) + 
-                        status_counts.get('Work from out of Rise', 0))
-        attendance_rate = round((present_count / total_records) * 100, 1) if total_records > 0 else 0
-        
-            # Build report based on type
-        if report_type == "summary":
-                # Summary Report
-            report_lines = [
-                "📊 **Attendance Summary Report**",
-                "=" * 15,
-                f"**Period:** {period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}",
-                f"**Filters:** Employee: {employee_name or 'All'}, Department: {department or 'All'}, Status: {status or 'All'}",
-                "",
-                f"📈 **Key Metrics:**",
-                f"  • Total Records: {total_records}",
-                f"  • Employees Covered: {unique_employees}",
-                f"  • Departments: {unique_departments}",
-                f"  • Days Covered: {unique_dates}",
-                f"  • Overall Attendance Rate: {attendance_rate}%",
-                "",
-                f"📊 **Status Breakdown:**"
-            ]
-            
-            for status, count in sorted(status_counts.items(), key=lambda x: x[1], reverse=True):
-                percentage = round((count / total_records) * 100, 1)
-                emoji = "✅" if status == "Present" else "🏠" if status == "Work from home" else "📅"
-                report_lines.append(f"  {emoji} {status}: {count} ({percentage}%)")
-            
-        elif report_type == "trends":
-                # Trends Report
-            report_lines = [
-                "📈 **Attendance Trends Report**",
-                "=" * 45,
-                f"**Analysis Period:** {period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}",
-                ""
-            ]
-            
-                # Day of week analysis with proper debugging
-            dow_analysis = {}
-            dow_names = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 
-                        4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
-            
-            # Debug: Log total records being processed
-            logger.info(f"Processing {len(records)} records for day-of-week analysis")
-            
-            for record in records:
-                # Handle potential None values for day_of_week
-                if record.get('day_of_week') is None:
-                    logger.warning(f"Missing day_of_week for record: {record.get('attendance_date')}")
-                    continue
-                    
-                try:
-                    dow = int(record['day_of_week'])
-                    dow_name = dow_names.get(dow, f'Unknown_DOW_{dow}')
-                    
-                    if dow_name not in dow_analysis:
-                        dow_analysis[dow_name] = {'total': 0, 'present': 0}
-                    
-                    dow_analysis[dow_name]['total'] += 1
-                    
-                    # Standardized present status check (includes Work from home)
-                    if record['status'] in ['Present', 'Work from home', 'Work from out of Rise']:
-                        dow_analysis[dow_name]['present'] += 1
-                        
-                except (ValueError, KeyError) as e:
-                    logger.error(f"Error processing day_of_week for record {record.get('attendance_date')}: {e}")
-                    continue
-            
-            # Debug: Log day-of-week analysis results
-            for day_name, data in dow_analysis.items():
-                logger.info(f"{day_name}: {data['present']}/{data['total']} records")
-            
-            report_lines.append("📅 **Day-of-Week Trends:**")
-            for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']:
-                if day in dow_analysis:
-                    data = dow_analysis[day]
-                    rate = round((data['present'] / data['total']) * 100, 1) if data['total'] > 0 else 0
-                    report_lines.append(f"  • {day}: {rate}% attendance ({data['present']}/{data['total']} records)")
-                else:
-                    report_lines.append(f"  • {day}: No records found")
-            
-                # Department trends with standardized status classification
-            if unique_departments > 1:
-                dept_analysis = {}
-                for record in records:
-                    dept = record['department_name']
-                    if dept not in dept_analysis:
-                        dept_analysis[dept] = {'total': 0, 'present': 0}
-                    
-                    dept_analysis[dept]['total'] += 1
-                    # Standardized present status check (consistent with above)
-                    if record['status'] in ['Present', 'Work from home', 'Work from out of Rise']:
-                        dept_analysis[dept]['present'] += 1
-                
-                report_lines.extend(["", "🏢 **Department Trends:**"])
-                for dept, data in sorted(dept_analysis.items(), key=lambda x: x[1]['present']/x[1]['total'] if x[1]['total'] > 0 else 0, reverse=True):
-                    rate = round((data['present'] / data['total']) * 100, 1) if data['total'] > 0 else 0
-                    report_lines.append(f"  • {dept}: {rate}% attendance ({data['present']}/{data['total']} records)")
-            
-        elif report_type == "comparative":
-                # Comparative Report
-            report_lines = [
-                "⚖️ **Comparative Attendance Report**",
-                "=" * 50,
-                f"**Comparison Period:** {period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}",
-                ""
-            ]
-            
-                # Employee comparison with standardized status classification
-            if unique_employees > 1:
-                emp_analysis = {}
-                for record in records:
-                    emp = record['employee_name']
-                    if emp not in emp_analysis:
-                        emp_analysis[emp] = {'total': 0, 'present': 0, 'department': record['department_name'], 'role': record['role']}
-                    
-                    emp_analysis[emp]['total'] += 1
-                    # Standardized present status check (consistent with above)
-                    if record['status'] in ['Present', 'Work from home', 'Work from out of Rise']:
-                        emp_analysis[emp]['present'] += 1
-                
-                report_lines.append("👥 **Employee Comparison (Top Performers):**")
-                sorted_employees = sorted(emp_analysis.items(), key=lambda x: x[1]['present']/x[1]['total'] if x[1]['total'] > 0 else 0, reverse=True)
-                
-                for emp_name, data in sorted_employees[:10]:  # Top 10
-                    rate = round((data['present'] / data['total']) * 100, 1) if data['total'] > 0 else 0
-                    report_lines.append(f"  • {emp_name} ({data['department']}): {rate}% ({data['present']}/{data['total']})")
-            
-        else:  # detailed report
-                # Group by date for detailed view
-            report_by_date = {}
-            for record in records:
-                date_str = record['attendance_date'].strftime('%Y-%m-%d (%A)')
-                if date_str not in report_by_date:
-                    report_by_date[date_str] = []
-                
-                entry = f"  • {record['employee_name']} ({record['department_name']}) [{record['role']}]: **{record['status']}**"
-                report_by_date[date_str].append(entry)
-            
-                # Build detailed report
-            report_lines = [
-                "📊 **Detailed Attendance Report**",
-                "=" * 50,
-                f"**Period:** {period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}",
-                f"**Summary:** {total_records} records • {unique_employees} employees • {attendance_rate}% attendance rate",
-                ""
-            ]
-            
-            for date_str, entries in sorted(report_by_date.items(), reverse=True):
-                daily_present = len([e for e in entries if '**Present**' in e or '**Work from home**' in e])
-                daily_total = len(entries)
-                daily_rate = round((daily_present / daily_total) * 100, 1) if daily_total > 0 else 0
-                
-                report_lines.append(f"**📅 {date_str}** ({daily_rate}% attendance)")
-                report_lines.extend(entries)
-                report_lines.append("")
-        
-            # Add trend insights if requested
-        if include_trends and report_type != "trends":
-            report_lines.extend(["", "🔍 **Trend Insights:**"])
-            
-            if attendance_rate >= 90:
-                report_lines.append("  • ⭐ Excellent overall attendance performance")
-            elif attendance_rate >= 75:
-                report_lines.append("  • ✅ Good attendance performance")
-            else:
-                report_lines.append("  • ⚠️ Attendance performance needs improvement")
-            
-                # WFH trends
-            wfh_count = status_counts.get('Work from home', 0)
-            if wfh_count > 0:
-                wfh_percentage = round((wfh_count / total_records) * 100, 1)
-                report_lines.append(f"  • 🏠 Work from home adoption: {wfh_percentage}% of records")
-            
-                # Leave patterns
-            leave_types = ['Planned Leave', 'Sudden Leave', 'Medical Leave', 'Holiday Leave', 'Lieu leave']
-            total_leaves = sum(status_counts.get(leave_type, 0) for leave_type in leave_types)
-            if total_leaves > 0:
-                leave_percentage = round((total_leaves / total_records) * 100, 1)
-                report_lines.append(f"  • 📅 Leave utilization: {leave_percentage}% of records")
-        
-        return "\n".join(report_lines)
-        
-    except Exception as e:
-        return f"Error generating attendance report: {e}"
-
-@tool
-def validate_attendance_data(employee_identifier: str, status: str, attendance_date: str = "") -> Dict[str, Any]:
-    """
-    Validates attendance data before marking or updating records. Helps prevent errors and provides suggestions.
-    employee_identifier can be either employee ID (number) or employee name.
-    status: The attendance status to validate
-    attendance_date: Date to validate (YYYY-MM-DD format, optional - defaults to today)
-    """
-    try:
-        validation_results = {
-            "is_valid": True,
-            "warnings": [],
-            "errors": [],
-            "suggestions": [],
-            "employee_info": None
+        # Extract department information
+        dept_patterns = {
+            'ai': ['ai', 'artificial intelligence', 'rise ai'],
+            'marketing': ['marketing', 'marketing team'],
+            'hr': ['hr', 'human resources', 'hr team'],
+            'finance': ['finance', 'accounting', 'finance team'],
+            'operations': ['operations', 'ops', 'operations team'],
+            'tech': ['tech', 'technology', 'tech team'],
+            'ramstudios': ['ramstudios', 'ram studios']
         }
         
-            # Validate status
-        valid_statuses = ["Present", "Work from home", "Planned Leave", "Sudden Leave", 
-                        "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"]
-        if status not in valid_statuses:
-            validation_results["is_valid"] = False
-            validation_results["errors"].append(f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}")
-            
-                # Suggest closest match
-            status_lower = status.lower()
-            for valid_status in valid_statuses:
-                if status_lower in valid_status.lower() or valid_status.lower() in status_lower:
-                    validation_results["suggestions"].append(f"Did you mean '{valid_status}'?")
-                    break
+        for dept_key, patterns in dept_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                department = dept_key
+                break
         
-            # Validate and parse date
-        target_date = None
-        if attendance_date:
-            try:
-                target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
-            except ValueError:
-                validation_results["is_valid"] = False
-                validation_results["errors"].append("Invalid date format. Please use YYYY-MM-DD format.")
-                validation_results["suggestions"].append(f"Example: {date.today().strftime('%Y-%m-%d')}")
+        # Extract role information
+        role_patterns = {
+            'leader': ['leader', 'leaders', 'lead', 'manager', 'head'],
+            'hr': ['hr staff', 'hr employee', 'hr person'],
+            'employee': ['employee', 'staff member', 'worker'],
+            'labourer': ['labourer', 'labor', 'worker']
+        }
+        
+        for role_key, patterns in role_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                role = role_key
+                break
+        
+        # Extract individual employee name
+        name_patterns = [
+            r'(?:details|information|info)\s+(?:for|about|of)?\s*([A-Za-z\s]+?)(?:\s|$)',
+            r'give\s+me\s+([A-Za-z\s]+?)(?:\s|details|information|$)',
+            r'([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\'s\s+info)',
+            r'"([^"]+)"',
+            r"'([^']+)'"
+        ]
+        
+        if query_type == "individual":
+            for pattern in name_patterns:
+                match = re.search(pattern, query, re.IGNORECASE)
+                if match:
+                    potential_name = match.group(1).strip()
+                    # Filter out common words that aren't names
+                    exclude_words = ['details', 'information', 'info', 'employee', 'staff', 'person', 'data', 'profile']
+                    if not any(word in potential_name.lower() for word in exclude_words) and len(potential_name.split()) <= 3:
+                        employee_name = potential_name
+                        break
+        
+        # Build SQL query based on detected intent
+        where_conditions = ["e.is_active = true"]
+        params = []
+        
+        if department:
+            where_conditions.append("LOWER(d.name) LIKE %s")
+            params.append(f"%{department}%")
+        
+        if role:
+            where_conditions.append("LOWER(e.role) = %s")
+            params.append(role.lower())
+        
+        if employee_name:
+            where_conditions.append("LOWER(e.name) LIKE %s")
+            params.append(f"%{employee_name.lower()}%")
+        
+        # Construct base query
+        base_query = """
+        SELECT 
+            e.id,
+            e.name,
+            e.email,
+            e.role,
+            e.phone_number,
+            e.address,
+            e.is_active,
+            d.name as department_name,
+            d.id as department_id
+        FROM employees e
+        JOIN departments d ON e.department_id = d.id
+        WHERE {where_clause}
+        ORDER BY d.name, e.role, e.name
+        """.format(where_clause=" AND ".join(where_conditions))
+        
+        # Execute query
+        results = execute_query(base_query, tuple(params))
+        
+        if not results:
+            return {
+                "success": True,
+                "message": f"No employees found matching '{query}'. Please check the spelling or try a different search.",
+                "data": [],
+                "response_type": "no_results",
+                "total_found": 0,
+                "follow_up_questions": [
+                    "Try searching for a specific department like 'AI team' or 'Marketing'",
+                    "Search by role like 'leaders' or 'HR staff'",
+                    "Check if you spelled the employee name correctly"
+                ]
+            }
+        
+        total_found = len(results)
+        
+        # Determine response strategy based on results count and query type
+        if query_type == "all_employees":
+            return _handle_all_employees_query(results)
+        elif query_type == "individual" and total_found == 1:
+            return _handle_individual_employee_query(results[0], query)
+        elif query_type == "individual" and total_found > 1:
+            return _handle_multiple_matches_query(results, employee_name, query)
+        elif query_type == "department" and total_found <= 15:
+            return _handle_department_query(results, department, query)
+        elif total_found > 15:
+            return _handle_large_group_query(results, query)
         else:
-            target_date = date.today()
+            return _handle_small_group_query(results, query)
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error processing employee query: {str(e)}",
+            "data": [],
+            "response_type": "error",
+            "query_understood": query
+        }
+
+def _handle_all_employees_query(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Handle 'all employees' queries with department summary approach"""
+    dept_summary = {}
+    total_employees = len(results)
+    
+    # Group by department
+    for emp in results:
+        dept_name = emp['department_name']
+        if dept_name not in dept_summary:
+            dept_summary[dept_name] = {'total': 0, 'roles': {}, 'employees': []}
         
-            # Validate date is not too far in the future
-        if target_date and target_date > date.today() + timedelta(days=7):
-            validation_results["warnings"].append("Date is more than a week in the future. Are you sure this is correct?")
+        dept_summary[dept_name]['total'] += 1
+        role = emp['role']
+        if role not in dept_summary[dept_name]['roles']:
+            dept_summary[dept_name]['roles'][role] = 0
+        dept_summary[dept_name]['roles'][role] += 1
+        dept_summary[dept_name]['employees'].append(emp['name'])
+    
+    # Create summary message
+    summary_lines = [f"**Company Overview: {total_employees} total employees across {len(dept_summary)} departments**\n"]
+    
+    for dept_name, data in sorted(dept_summary.items()):
+        role_breakdown = ", ".join([f"{count} {role}{'s' if count > 1 else ''}" for role, count in data['roles'].items()])
+        summary_lines.append(f"• **{dept_name}**: {data['total']} employees ({role_breakdown})")
+    
+    return {
+        "success": True,
+        "message": "\n".join(summary_lines),
+        "data": dept_summary,
+        "response_type": "all_employees_summary",
+        "total_found": total_employees,
+        "follow_up_questions": [
+            "Which department would you like to explore in detail?",
+            "Need information about employees in a specific role?",
+            "Want to see individual employee details?"
+        ]
+    }
+
+def _handle_individual_employee_query(employee: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """Handle individual employee queries with full details"""
+    profile_lines = [
+        f"**{employee['name']}** - {employee['role'].title()}",
+        f"📧 **Email**: {employee['email']}",
+        f"🏢 **Department**: {employee['department_name']}",
+    ]
+    
+    if employee.get('phone_number'):
+        profile_lines.append(f"📞 **Phone**: {employee['phone_number']}")
+    
+    if employee.get('address'):
+        profile_lines.append(f"🏠 **Address**: {employee['address']}")
+    
+    profile_lines.append(f"✅ **Status**: {'Active' if employee['is_active'] else 'Inactive'}")
+    
+    return {
+        "success": True,
+        "message": "\n".join(profile_lines),
+        "data": employee,
+        "response_type": "individual_profile",
+        "total_found": 1,
+        "follow_up_questions": [
+            f"Need {employee['name']}'s attendance records?",
+            f"Want to see other employees in {employee['department_name']}?",
+            f"Looking for other {employee['role']}s in the company?"
+        ]
+    }
+
+def _handle_multiple_matches_query(results: List[Dict[str, Any]], name: str, query: str) -> Dict[str, Any]:
+    """Handle queries where multiple employees match the name"""
+    matches_list = []
+    for emp in results:
+        matches_list.append(f"• **{emp['name']}** ({emp['role']}) - {emp['department_name']} Department")
+    
+    message = f"Found {len(results)} employees matching '{name}':\n\n" + "\n".join(matches_list)
+    
+    return {
+        "success": True,
+        "message": message + "\n\nPlease specify which person you're looking for.",
+        "data": results,
+        "response_type": "multiple_matches",
+        "total_found": len(results),
+        "follow_up_questions": [
+            "Which specific person did you mean?",
+            "Try adding the department name to your search",
+            "Need details for all of these employees?"
+        ]
+    }
+
+def _handle_department_query(results: List[Dict[str, Any]], department: str, query: str) -> Dict[str, Any]:
+    """Handle department-based queries with name list approach"""
+    dept_name = results[0]['department_name'] if results else department
+    
+    # Group by role
+    role_groups = {}
+    for emp in results:
+        role = emp['role']
+        if role not in role_groups:
+            role_groups[role] = []
+        role_groups[role].append(emp['name'])
+    
+    # Create organized list
+    summary_lines = [f"**{dept_name} Department - {len(results)} employees:**\n"]
+    
+    for role, names in sorted(role_groups.items()):
+        role_title = f"{role.title()}s" if len(names) > 1 else role.title()
+        summary_lines.append(f"**{role_title}**: {', '.join(names)}")
+    
+    return {
+        "success": True,
+        "message": "\n".join(summary_lines),
+        "data": {"department": dept_name, "employees": results, "role_groups": role_groups},
+        "response_type": "department_list",
+        "total_found": len(results),
+        "follow_up_questions": [
+            "Need detailed information for any specific person?",
+            f"Want to see attendance records for {dept_name} team?",
+            "Looking for employees with a specific role?"
+        ]
+    }
+
+def _handle_large_group_query(results: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
+    """Handle queries with large result sets (>15 employees)"""
+    # Create department and role summaries
+    dept_counts = {}
+    role_counts = {}
+    
+    for emp in results:
+        dept = emp['department_name']
+        role = emp['role']
+        dept_counts[dept] = dept_counts.get(dept, 0) + 1
+        role_counts[role] = role_counts.get(role, 0) + 1
+    
+    summary_lines = [f"**Found {len(results)} employees matching your query**\n"]
+    
+    if len(dept_counts) > 1:
+        summary_lines.append("**By Department:**")
+        for dept, count in sorted(dept_counts.items()):
+            summary_lines.append(f"• {dept}: {count} employees")
+        summary_lines.append("")
+    
+    if len(role_counts) > 1:
+        summary_lines.append("**By Role:**")
+        for role, count in sorted(role_counts.items()):
+            summary_lines.append(f"• {role.title()}s: {count}")
+    
+    return {
+        "success": True,
+        "message": "\n".join(summary_lines),
+        "data": {"summary": {"departments": dept_counts, "roles": role_counts}, "total": len(results)},
+        "response_type": "large_group_summary",
+        "total_found": len(results),
+        "follow_up_questions": [
+            "Which department would you like to see in detail?",
+            "Filter by a specific role?",
+            "Looking for someone specific in this group?"
+        ]
+    }
+
+def _handle_small_group_query(results: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
+    """Handle queries with small result sets (2-15 employees)"""
+    summary_lines = [f"**Found {len(results)} employees:**\n"]
+    
+    for emp in results:
+        summary_lines.append(f"• **{emp['name']}** ({emp['role']}) - {emp['department_name']}")
+    
+    return {
+        "success": True,
+        "message": "\n".join(summary_lines),
+        "data": results,
+        "response_type": "small_group",
+        "total_found": len(results),
+        "follow_up_questions": [
+            "Need detailed information for any of these employees?",
+            "Want to see their contact information?",
+            "Looking for attendance records?"
+        ]
+    }
+
+@tool
+def get_department_employee_summary() -> Dict[str, Any]:
+    """
+    Get a comprehensive summary of all employees organized by department.
+    Perfect for answering "How many employees do we have?" or "Show me our team structure"
+    
+    Returns:
+    - Department-wise employee counts
+    - Role distribution within each department  
+    - Total company statistics
+    - Organized summary for decision-making
+    """
+    try:
+        query = """
+        SELECT 
+            d.name as department_name,
+            e.role,
+            COUNT(*) as employee_count,
+            STRING_AGG(e.name, ', ' ORDER BY e.name) as employee_names
+        FROM employees e
+        JOIN departments d ON e.department_id = d.id
+        WHERE e.is_active = true
+        GROUP BY d.name, e.role
+        ORDER BY d.name, e.role
+        """
         
-            # Validate date is not too far in the past (more than 3 months)
-        if target_date and target_date < date.today() - timedelta(days=90):
-            validation_results["warnings"].append("Date is more than 3 months in the past. Consider if this historical update is necessary.")
+        results = execute_query(query)
         
-            # Validate employee
+        if not results:
+            return {
+                "success": True,
+                "message": "No active employees found in the system.",
+                "data": {},
+                "total_employees": 0
+            }
+        
+        # Organize data by department
+        dept_data = {}
+        total_employees = 0
+        
+        for row in results:
+            dept_name = row['department_name']
+            role = row['role']
+            count = row['employee_count']
+            names = row['employee_names']
+            
+            if dept_name not in dept_data:
+                dept_data[dept_name] = {
+                    'total_employees': 0,
+                    'roles': {},
+                    'all_employees': []
+                }
+            
+            dept_data[dept_name]['total_employees'] += count
+            dept_data[dept_name]['roles'][role] = {
+                'count': count,
+                'names': names.split(', ') if names else []
+            }
+            dept_data[dept_name]['all_employees'].extend(names.split(', ') if names else [])
+            
+            total_employees += count
+        
+        # Create summary message
+        summary_lines = [
+            f"🏢 **Company Structure Overview**",
+            f"**Total Employees**: {total_employees} across {len(dept_data)} departments\n"
+        ]
+        
+        for dept_name, data in sorted(dept_data.items()):
+            role_summary = ", ".join([f"{info['count']} {role}{'s' if info['count'] > 1 else ''}" 
+                                    for role, info in data['roles'].items()])
+            summary_lines.append(f"**{dept_name} ({data['total_employees']} employees)**")
+            summary_lines.append(f"  └── {role_summary}")
+            summary_lines.append("")
+        
+        return {
+            "success": True,
+            "message": "\n".join(summary_lines),
+            "data": dept_data,
+            "total_employees": total_employees,
+            "total_departments": len(dept_data),
+            "response_type": "department_summary",
+            "follow_up_questions": [
+                "Which department would you like to explore in detail?",
+                "Need specific employee information from any team?",
+                "Want to see attendance patterns by department?"
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error generating department summary: {str(e)}",
+            "data": {}
+        }
+
+@tool  
+def get_individual_employee_profile(employee_identifier: str) -> Dict[str, Any]:
+    """
+    Get complete profile information for a specific employee.
+    
+    Parameters:
+    - employee_identifier: Employee ID (number), email, or full/partial name
+    
+    Returns:
+    - Complete employee profile with all available information
+    - Department details and role information
+    - Contact information and status
+    - Recent activity summary if available
+    """
+    try:
+        # Determine search type
         employee = None
-        if employee_identifier.isdigit():
-                # Lookup by ID
+        search_type = "unknown"
+        
+        if employee_identifier.strip().isdigit():
+            # Search by ID
+            search_type = "id"
             employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE e.id = %s AND e.is_active = true
+                """,
+                (int(employee_identifier.strip()),)
+            )
+        elif '@' in employee_identifier:
+            # Search by email
+            search_type = "email"
+            employee = execute_query(
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE LOWER(e.email) = LOWER(%s) AND e.is_active = true
+                """,
+                (employee_identifier.strip(),)
             )
         else:
-                # Lookup by name (fuzzy matching)
+            # Search by name (fuzzy matching)
+            search_type = "name"
             employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE LOWER(e.name) LIKE LOWER(%s) AND e.is_active = true
+                ORDER BY 
+                    CASE WHEN LOWER(e.name) = LOWER(%s) THEN 1 ELSE 2 END,
+                    LENGTH(e.name) ASC
+                """,
+                (f"%{employee_identifier.strip()}%", employee_identifier.strip())
             )
         
         if not employee:
-            validation_results["is_valid"] = False
-            validation_results["errors"].append(f"Employee '{employee_identifier}' not found or inactive.")
-            
-                # Try to find similar names
-            similar_employees = execute_query(
-                "SELECT name FROM employees WHERE name ILIKE %s AND is_active = true LIMIT 3",
-                (f"%{employee_identifier[:3]}%",)
-            )
-            if similar_employees:
-                similar_names = [emp['name'] for emp in similar_employees]
-                validation_results["suggestions"].append(f"Similar names found: {', '.join(similar_names)}")
-            
-        elif len(employee) > 1:
-            validation_results["is_valid"] = False
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            validation_results["errors"].append(f"Multiple employees found matching '{employee_identifier}'. Please be more specific.")
-            validation_results["suggestions"].extend([f"Use: {match}" for match in matches])
-        
-        else:
-                # Valid employee found
-            employee_data = employee[0]
-            validation_results["employee_info"] = {
-                "id": employee_data['id'],
-                "name": employee_data['name'],
-                "email": employee_data['email'],
-                "role": employee_data['role']
+            return {
+                "success": False,
+                "message": f"No active employee found matching '{employee_identifier}'. Please check the spelling or try a different identifier.",
+                "suggestions": [
+                    "Try using the employee's full name",
+                    "Use their email address",
+                    "Check if the employee is still active"
+                ]
             }
-            
-            employee_id = employee_data['id']
-            employee_name = employee_data['name']
-            
-                # Check if attendance already exists for the date
-            if target_date:
-                existing = execute_query(
-                    "SELECT id, status FROM attendances WHERE employee_id = %s AND attendance_date = %s",
-                    (employee_id, target_date)
-                )
-                
-                if existing:
-                    current_status = existing[0]['status']
-                    if current_status == status:
-                        validation_results["warnings"].append(f"Attendance for {employee_name} on {target_date.strftime('%Y-%m-%d')} is already marked as '{status}'.")
-                    else:
-                        validation_results["warnings"].append(f"Attendance for {employee_name} on {target_date.strftime('%Y-%m-%d')} is currently '{current_status}'. This will update it to '{status}'.")
-                
-                    # Get recent attendance pattern for context
-                recent_attendance = execute_query(
-                    """SELECT attendance_date, status FROM attendances 
-                       WHERE employee_id = %s AND attendance_date >= %s AND attendance_date < %s
-                       ORDER BY attendance_date DESC LIMIT 5""",
-                    (employee_id, target_date - timedelta(days=7), target_date)
-                )
-                
-                if recent_attendance:
-                    validation_results["context"] = {
-                        "recent_pattern": [
-                            {"date": rec['attendance_date'].strftime('%Y-%m-%d'), "status": rec['status']}
-                            for rec in recent_attendance
-                        ]
-                    }
-                    
-                        # Check for patterns
-                    recent_statuses = [rec['status'] for rec in recent_attendance]
-                    if status == "Sudden Leave" and all(s in ["Present", "Work from home"] for s in recent_statuses):
-                        validation_results["suggestions"].append("Employee has been consistently present recently. Sudden leave might need approval.")
-                    elif status in ["Present", "Work from home"] and all(s.endswith("Leave") for s in recent_statuses):
-                        validation_results["suggestions"].append("Employee is returning from leave period.")
         
-            # Business rule validations
-        if target_date and validation_results["employee_info"]:
-                # Check for weekend work (if company policy)
-            if target_date.weekday() >= 5:  # Saturday = 5, Sunday = 6
-                if status == "Present":
-                    validation_results["warnings"].append("Marking attendance for weekend day. Verify if this is correct.")
+        if len(employee) > 1:
+            # Multiple matches - show options
+            matches_list = []
+            for emp in employee[:5]:  # Show top 5 matches
+                matches_list.append(f"• **{emp['name']}** ({emp['role']}) - {emp['department_name']} | {emp['email']}")
             
-                # Check for role-specific rules
-            employee_role = validation_results["employee_info"]["role"]
-            if employee_role == "hr" and status in ["Sudden Leave", "Medical Leave"]:
-                validation_results["suggestions"].append("HR personnel leave might require special handling or coverage.")
-            elif employee_role == "leader" and status == "Sudden Leave":
-                validation_results["suggestions"].append("Leader absence might require delegation or team notification.")
+            return {
+                "success": True,
+                "message": f"Found {len(employee)} employees matching '{employee_identifier}':\n\n" + "\n".join(matches_list),
+                "data": employee,
+                "response_type": "multiple_matches",
+                "total_found": len(employee),
+                "follow_up_questions": [
+                    "Which specific employee did you mean?",
+                    "Use the employee's email for exact match",
+                    "Try being more specific with the name"
+                ]
+            }
         
-            # Generate summary message
-        if validation_results["is_valid"]:
-            employee_info = validation_results.get("employee_info", {})
-            message = f"✅ Validation passed for {employee_info.get('name', employee_identifier)}"
-            if target_date:
-                message += f" on {target_date.strftime('%Y-%m-%d')}"
-            message += f" with status '{status}'"
+        # Single match found
+        emp = employee[0]
+        
+        # Build comprehensive profile
+        profile_sections = [
+            f"👤 **{emp['name']}**",
+            f"📋 **Role**: {emp['role'].title()}",
+            f"🏢 **Department**: {emp['department_name']}",
+            f"📧 **Email**: {emp['email']}",
+        ]
+        
+        if emp.get('phone_number'):
+            profile_sections.append(f"📞 **Phone**: {emp['phone_number']}")
+        
+        if emp.get('address'):
+            profile_sections.append(f"🏠 **Address**: {emp['address']}")
+        
+        profile_sections.extend([
+            f"🆔 **Employee ID**: {emp['id']}",
+            f"✅ **Status**: {'Active' if emp['is_active'] else 'Inactive'}"
+        ])
+        
+        if emp.get('created_at'):
+            from datetime import datetime
+            created_date = emp['created_at']
+            if isinstance(created_date, str):
+                created_date = datetime.fromisoformat(created_date.replace('Z', '+00:00'))
+            profile_sections.append(f"📅 **Joined**: {created_date.strftime('%B %d, %Y')}")
+        
+        # Get additional context (recent attendance if available)
+        try:
+            recent_attendance = execute_query(
+                """
+                SELECT attendance_date, status
+                FROM attendances
+                WHERE employee_id = %s
+                ORDER BY attendance_date DESC
+                LIMIT 5
+                """,
+                (emp['id'],)
+            )
             
-            if validation_results["warnings"]:
-                message += f" ({len(validation_results['warnings'])} warnings)"
-        else:
-            message = f"❌ Validation failed: {len(validation_results['errors'])} error(s) found"
+            if recent_attendance:
+                profile_sections.append(f"\n📊 **Recent Attendance** (Last 5 days):")
+                for record in recent_attendance:
+                    date_str = record['attendance_date'].strftime('%Y-%m-%d') if hasattr(record['attendance_date'], 'strftime') else str(record['attendance_date'])
+                    profile_sections.append(f"  • {date_str}: {record['status']}")
+        except:
+            # If attendance query fails, continue without it
+            pass
         
         return {
-            "success": validation_results["is_valid"],
-            "message": message,
-            "validation_details": validation_results,
-            "employee_identifier": employee_identifier,
-            "status": status,
-            "date": target_date.strftime('%Y-%m-%d') if target_date else None
+            "success": True,
+            "message": "\n".join(profile_sections),
+            "data": emp,
+            "response_type": "individual_profile",
+            "search_type": search_type,
+            "follow_up_questions": [
+                f"Need {emp['name']}'s full attendance history?",
+                f"Want to see other employees in {emp['department_name']}?",
+                f"Looking for other {emp['role']}s in the company?",
+                "Need to update any of this information?"
+            ]
         }
         
     except Exception as e:
-        return {"success": False, "message": f"Error validating attendance data: {e}"}
+        return {
+            "success": False,
+            "message": f"Error retrieving employee profile: {str(e)}",
+            "data": {}
+        }
+
+# ==============================================================================
+
+
 
 @tool
 def get_all_employees_overview(employee_name: str = None, department: str = None) -> Dict[str, Any]:
@@ -1303,470 +898,654 @@ def get_tasks_report(leader_name: str = None, department: str = None,
     except Exception as e:
         return f"Error generating tasks report: {e}"
 
+# ==============================================================================
+# EMPLOYEE MANAGEMENT TOOLS (CREATE/UPDATE)
+# ==============================================================================
+
+@tool
+def create_employee_intelligent(
+    query: str, 
+    name: str = "", 
+    email: str = "", 
+    role: str = "", 
+    department: str = "", 
+    phone_number: str = "", 
+    address: str = ""
+) -> Dict[str, Any]:
+    """
+    Intelligent employee creation tool with validation and human-loop guidance.
+    
+    Handles natural language requests like:
+    - "Create new employee John Doe"
+    - "Add Sarah Smith to marketing team as leader"
+    - "I need to add a new intern to AI department"
+    
+    Parameters:
+    - query: Natural language request for employee creation
+    - name: Employee full name (required)
+    - email: Employee email address (required) 
+    - role: Employee role - must be 'hr', 'leader', or 'employee'
+    - department: Department name or ID
+    - phone_number: Phone number (optional)
+    - address: Address (optional)
+    
+    Returns:
+    - success: bool
+    - message: Human-readable result
+    - response_type: Type of response (form_request, validation_error, success_created, etc.)
+    - form_data: Data for frontend form if needed
+    - follow_up_questions: Suggested next actions
+    """
+    try:
+        # If no direct parameters provided, parse from natural language query
+        if not name and not email:
+            parsed_data = _parse_employee_creation_query(query)
+            name = parsed_data.get('name', '')
+            email = parsed_data.get('email', '')
+            role = parsed_data.get('role', '')
+            department = parsed_data.get('department', '')
+        
+        # Check if we have enough information to proceed
+        missing_fields = []
+        if not name:
+            missing_fields.append("name")
+        if not email:
+            missing_fields.append("email")
+        if not role:
+            missing_fields.append("role")
+        if not department:
+            missing_fields.append("department")
+        
+        # If missing required fields, request form
+        if missing_fields:
+            departments_data = _get_available_departments()
+            return {
+                "success": True,
+                "message": f"I'll help you create a new employee record{f' for {name}' if name else ''}. Let me gather the required information.",
+                "response_type": "form_request",
+                "action": "create_employee",
+                "form_data": {
+                    "pre_filled": {
+                        "name": name,
+                        "email": email,
+                        "role": role,
+                        "department": department,
+                        "phone_number": phone_number,
+                        "address": address
+                    },
+                    "departments": departments_data,
+                    "roles": [
+                        {"value": "hr", "label": "HR Staff"},
+                        {"value": "leader", "label": "Team Leader"},
+                        {"value": "employee", "label": "Employee"}
+                    ],
+                    "required_fields": ["name", "email", "role", "department"]
+                },
+                "follow_up_questions": []
+            }
+        
+        # Validate provided data
+        validation_result = _validate_employee_data(name, email, role, department, "create")
+        if not validation_result["valid"]:
+            return {
+                "success": False,
+                "message": validation_result["message"],
+                "response_type": "validation_error",
+                "suggestions": validation_result["suggestions"],
+                "follow_up_questions": ["Would you like to correct the information and try again?"]
+            }
+        
+        # Check for duplicate email
+        existing_employee = execute_query(
+            "SELECT id, name FROM employees WHERE LOWER(email) = LOWER(%s)",
+            (email,)
+        )
+        
+        if existing_employee:
+            return {
+                "success": False,
+                "message": f"Email '{email}' is already registered to {existing_employee[0]['name']}. Each employee must have a unique email address.",
+                "response_type": "validation_error",
+                "suggestions": [
+                    "Use a different email address",
+                    "Check if this person already exists in the system",
+                    "Contact IT if this employee needs a new email"
+                ],
+                "follow_up_questions": [f"Would you like to view {existing_employee[0]['name']}'s profile instead?"]
+            }
+        
+        # Get department ID
+        dept_id = _get_department_id(department)
+        if not dept_id:
+            return {
+                "success": False,
+                "message": f"Department '{department}' not found. Available departments: {', '.join([d['name'] for d in _get_available_departments()])}",
+                "response_type": "validation_error",
+                "suggestions": ["Check the department name spelling", "Choose from available departments"],
+                "follow_up_questions": ["Would you like to see all available departments?"]
+            }
+        
+        # Create the employee
+        execute_query(
+            """
+            INSERT INTO employees (name, email, role, department_id, phone_number, address, is_active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (name, email, role, dept_id, phone_number or None, address or None, True, datetime.now(), datetime.now()),
+            fetch=False
+        )
+        
+        # Retrieve the created employee with department info
+        created_employee = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE e.email = %s
+            """,
+            (email,)
+        )[0]
+        
+        # Create success message
+        success_message = f"✅ Successfully created employee record for **{name}**!\n"
+        success_message += f"📧 Email: {email}\n"
+        success_message += f"🏢 Department: {created_employee['department_name']}\n"
+        success_message += f"👤 Role: {role.title()}\n"
+        success_message += f"🆔 Employee ID: {created_employee['id']}"
+        
+        if phone_number:
+            success_message += f"\n📞 Phone: {phone_number}"
+        if address:
+            success_message += f"\n🏠 Address: {address}"
+        
+        return {
+            "success": True,
+            "message": success_message,
+            "response_type": "success_created",
+            "data": created_employee,
+            "follow_up_questions": [
+                f"Would you like to set up attendance tracking for {name}?",
+                "Need to create another employee record?",
+                f"Want to see all employees in {created_employee['department_name']} department?"
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error creating employee record: {str(e)}",
+            "response_type": "error",
+            "follow_up_questions": ["Would you like to try again with the employee information?"]
+        }
+
+@tool
+def update_employee_intelligent(
+    query: str,
+    employee_identifier: str = "",
+    field_updates: Dict[str, Any] = None,
+    update_reason: str = ""
+) -> Dict[str, Any]:
+    """
+    Intelligent employee update tool with change tracking and validation.
+    
+    Handles natural language requests like:
+    - "Update Sarah's phone number to 555-1234"
+    - "Change John's role to leader"
+    - "Move Alice to marketing department"
+    - "Update Mike Johnson's email"
+    
+    Parameters:
+    - query: Natural language request for employee update
+    - employee_identifier: Employee ID, email, or name to identify employee
+    - field_updates: Dictionary of fields to update {field: new_value}
+    - update_reason: Reason for the update (optional)
+    
+    Returns:
+    - success: bool
+    - message: Human-readable result
+    - response_type: Type of response (form_request, employee_found, validation_error, etc.)
+    - data: Employee data and form information
+    - changes_made: List of changes if successful
+    """
+    try:
+        # Initialize field_updates if None
+        if field_updates is None:
+            field_updates = {}
+            
+        # Parse the query to extract employee identifier and intended updates
+        if not employee_identifier and not field_updates:
+            parsed_data = _parse_employee_update_query(query)
+            employee_identifier = parsed_data.get('employee_identifier', '')
+            field_updates = parsed_data.get('field_updates', {})
+            update_reason = parsed_data.get('update_reason', update_reason)
+        
+        # Search for the employee
+        if not employee_identifier:
+            return {
+                "success": False,
+                "message": "I need to know which employee you want to update. Please provide their name, email, or employee ID.",
+                "response_type": "missing_identifier",
+                "follow_up_questions": [
+                    "Which employee would you like to update?",
+                    "You can specify by name, email, or employee ID"
+                ]
+            }
+        
+        # Find the employee
+        search_result = _search_employee_for_update(employee_identifier)
+        
+        if search_result["type"] == "not_found":
+            # Employee not found - offer to create
+            return {
+                "success": True,
+                "message": f"I couldn't find an employee matching '{employee_identifier}' in our database.\n\nWould you like me to create a new employee record for them?",
+                "response_type": "employee_not_found_create_offer",
+                "suggested_name": employee_identifier if not employee_identifier.isdigit() else "",
+                "follow_up_questions": [
+                    "Yes, create a new employee record",
+                    "No, let me search for a different employee",
+                    "Show me all employees to find the right person"
+                ]
+            }
+        
+        elif search_result["type"] == "multiple_matches":
+            # Multiple employees found
+            matches_list = []
+            for emp in search_result["employees"]:
+                matches_list.append(f"• **{emp['name']}** ({emp['role']}) - {emp['department_name']} | ID: {emp['id']}")
+            
+            return {
+                "success": True,
+                "message": f"Found multiple employees matching '{employee_identifier}':\n\n" + "\n".join(matches_list) + "\n\nWhich employee did you mean?",
+                "response_type": "multiple_matches",
+                "data": search_result["employees"],
+                "follow_up_questions": [
+                    "Please specify the exact employee ID or full name",
+                    "Tell me which department they work in",
+                    "Use their email address for exact match"
+                ]
+            }
+        
+        elif search_result["type"] == "single_match":
+            employee = search_result["employee"]
+            
+            # If no specific field updates provided, show update form
+            if not field_updates:
+                departments_data = _get_available_departments()
+                return {
+                    "success": True,
+                    "message": f"Found **{employee['name']}** ({employee['role']} in {employee['department_name']}). What would you like to update?",
+                    "response_type": "employee_found_update_form",
+                    "action": "update_employee",
+                    "data": employee,
+                    "form_data": {
+                        "current_values": {
+                            "name": employee['name'],
+                            "email": employee['email'],
+                            "role": employee['role'],
+                            "department": employee['department_name'],
+                            "phone_number": employee.get('phone_number', ''),
+                            "address": employee.get('address', '')
+                        },
+                        "employee_id": employee['id'],
+                        "departments": departments_data,
+                        "roles": [
+                            {"value": "hr", "label": "HR Staff"},
+                            {"value": "leader", "label": "Team Leader"},
+                            {"value": "employee", "label": "Employee"}
+                        ]
+                    },
+                    "follow_up_questions": [
+                        "Which information would you like to update?",
+                        "Need to change their role or department?",
+                        "Want to update contact information?"
+                    ]
+                }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error updating employee: {str(e)}",
+            "response_type": "error",
+            "follow_up_questions": ["Would you like to try the update again?"]
+        }
+
+@tool
+def search_employee_for_management(query: str) -> Dict[str, Any]:
+    """
+    Search for employees in the context of management operations (create/update).
+    This tool helps identify employees for update operations or detect when creation is needed.
+    
+    Parameters:
+    - query: Employee name, email, ID, or natural language search query
+    
+    Returns:
+    - Type of match found (single, multiple, not_found)
+    - Employee data if found
+    - Suggestions for next steps
+    """
+    try:
+        search_result = _search_employee_for_update(query)
+        
+        if search_result["type"] == "not_found":
+            return {
+                "success": True,
+                "message": f"No employee found matching '{query}'.",
+                "response_type": "not_found",
+                "suggested_action": "create_employee",
+                "follow_up_questions": [
+                    f"Would you like to create a new employee record for '{query}'?",
+                    "Try searching with a different name or email",
+                    "Show me all employees to find who you're looking for"
+                ]
+            }
+        
+        elif search_result["type"] == "multiple_matches":
+            matches_list = []
+            for emp in search_result["employees"]:
+                matches_list.append(f"• **{emp['name']}** ({emp['role']}) - {emp['department_name']} | {emp['email']}")
+            
+            return {
+                "success": True,
+                "message": f"Found multiple employees matching '{query}':\n\n" + "\n".join(matches_list),
+                "response_type": "multiple_matches",
+                "data": search_result["employees"],
+                "follow_up_questions": [
+                    "Which specific employee did you mean?",
+                    "Please provide more specific information",
+                    "Use their email address for exact match"
+                ]
+            }
+        
+        else:  # single_match
+            employee = search_result["employee"]
+            return {
+                "success": True,
+                "message": f"Found **{employee['name']}** ({employee['role']} in {employee['department_name']}).",
+                "response_type": "single_match",
+                "data": employee,
+                "follow_up_questions": [
+                    f"Would you like to update {employee['name']}'s information?",
+                    f"Need to see {employee['name']}'s complete profile?",
+                    f"Want to see other employees in {employee['department_name']}?"
+                ]
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error searching for employee: {str(e)}",
+            "response_type": "error"
+        }
+
+@tool
+def get_form_data_for_frontend() -> Dict[str, Any]:
+    """
+    Get structured data needed for frontend forms (departments, roles, etc.).
+    This tool provides the dropdown options and validation data for employee forms.
+    
+    Returns:
+    - Available departments with IDs and names
+    - Available roles with values and labels  
+    - Form validation rules
+    - Field requirements
+    """
+    try:
+        departments_data = _get_available_departments()
+        
+        return {
+            "success": True,
+            "message": "Form data retrieved successfully",
+            "data": {
+                "departments": departments_data,
+                "roles": [
+                    {"value": "hr", "label": "HR Staff"},
+                    {"value": "leader", "label": "Team Leader"},
+                    {"value": "employee", "label": "Employee"}
+                ],
+                "validation_rules": {
+                    "name": {"required": True, "min_length": 2, "max_length": 100},
+                    "email": {"required": True, "format": "email", "unique": True},
+                    "role": {"required": True, "allowed_values": ["hr", "leader", "employee"]},
+                    "department": {"required": True},
+                    "phone_number": {"required": False, "format": "phone"},
+                    "address": {"required": False, "max_length": 500}
+                },
+                "field_labels": {
+                    "name": "Full Name",
+                    "email": "Email Address", 
+                    "role": "Employee Role",
+                    "department": "Department",
+                    "phone_number": "Phone Number",
+                    "address": "Address"
+                }
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error retrieving form data: {str(e)}",
+            "data": {}
+        }
+
+# ==============================================================================
+# EMPLOYEE MANAGEMENT HELPER FUNCTIONS
+# ==============================================================================
+
+def _parse_employee_creation_query(query: str) -> Dict[str, str]:
+    """Parse natural language employee creation query"""
+    import re
+    
+    result = {"name": "", "email": "", "role": "", "department": ""}
+    query_lower = query.lower()
+    
+    # Extract name patterns
+    name_patterns = [
+        r'create.*employee\s+([A-Za-z\s]+?)(?:\s|$)',
+        r'add\s+([A-Za-z\s]+?)\s+to',
+        r'new\s+employee\s+([A-Za-z\s]+?)(?:\s|$)'
+    ]
+    
+    for pattern in name_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            potential_name = match.group(1).strip()
+            if len(potential_name.split()) <= 4:  # Reasonable name length
+                result["name"] = potential_name
+                break
+    
+    # Extract email if present
+    email_pattern = r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b'
+    email_match = re.search(email_pattern, query)
+    if email_match:
+        result["email"] = email_match.group(1)
+    
+    # Extract role
+    if 'leader' in query_lower or 'manager' in query_lower:
+        result["role"] = "leader"
+    elif 'hr' in query_lower:
+        result["role"] = "hr"
+    elif 'intern' in query_lower or 'employee' in query_lower:
+        result["role"] = "employee"
+    
+    # Extract department
+    dept_keywords = {
+        'ai': ['ai', 'artificial intelligence', 'rise ai'],
+        'marketing': ['marketing', 'marketing team'],
+        'hr': ['hr', 'human resources'],
+        'finance': ['finance', 'accounting'],
+        'operations': ['operations', 'ops'],
+        'tech': ['tech', 'technology']
+    }
+    
+    for dept_key, keywords in dept_keywords.items():
+        if any(keyword in query_lower for keyword in keywords):
+            result["department"] = dept_key
+            break
+    
+    return result
+
+def _parse_employee_update_query(query: str) -> Dict[str, Any]:
+    """Parse natural language employee update query"""
+    import re
+    
+    result = {"employee_identifier": "", "field_updates": {}, "update_reason": ""}
+    
+    # Extract employee identifier
+    identifier_patterns = [
+        r'update\s+([A-Za-z\s]+?)(?:\s|\'s)',
+        r'change\s+([A-Za-z\s]+?)(?:\s|\'s)',
+        r'modify\s+([A-Za-z\s]+?)(?:\s|\'s)'
+    ]
+    
+    for pattern in identifier_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            result["employee_identifier"] = match.group(1).strip()
+            break
+    
+    # Extract field updates
+    if 'phone' in query.lower():
+        phone_match = re.search(r'phone.*?(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})', query)
+        if phone_match:
+            result["field_updates"]["phone_number"] = phone_match.group(1)
+    
+    if 'email' in query.lower():
+        email_match = re.search(r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b', query)
+        if email_match:
+            result["field_updates"]["email"] = email_match.group(1)
+    
+    if 'role to leader' in query.lower() or 'role to manager' in query.lower():
+        result["field_updates"]["role"] = "leader"
+    elif 'role to hr' in query.lower():
+        result["field_updates"]["role"] = "hr"
+    elif 'role to employee' in query.lower():
+        result["field_updates"]["role"] = "employee"
+    
+    return result
+
+def _search_employee_for_update(identifier: str) -> Dict[str, Any]:
+    """Search for employee by various identifiers for update operations"""
+    try:
+        employees = []
+        
+        if identifier.strip().isdigit():
+            # Search by ID
+            employees = execute_query(
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE e.id = %s AND e.is_active = true
+                """,
+                (int(identifier.strip()),)
+            )
+        elif '@' in identifier:
+            # Search by email
+            employees = execute_query(
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE LOWER(e.email) = LOWER(%s) AND e.is_active = true
+                """,
+                (identifier.strip(),)
+            )
+        else:
+            # Search by name (fuzzy)
+            employees = execute_query(
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE LOWER(e.name) LIKE LOWER(%s) AND e.is_active = true
+                ORDER BY 
+                    CASE WHEN LOWER(e.name) = LOWER(%s) THEN 1 ELSE 2 END,
+                    LENGTH(e.name) ASC
+                """,
+                (f"%{identifier.strip()}%", identifier.strip())
+            )
+        
+        if not employees:
+            return {"type": "not_found"}
+        elif len(employees) == 1:
+            return {"type": "single_match", "employee": employees[0]}
+        else:
+            return {"type": "multiple_matches", "employees": employees}
+            
+    except Exception as e:
+        return {"type": "error", "message": str(e)}
+
+def _validate_employee_data(name: str, email: str, role: str, department: str, operation: str) -> Dict[str, Any]:
+    """Validate employee data for creation or update"""
+    errors = []
+    suggestions = []
+    
+    # Validate name
+    if not name or len(name.strip()) < 2:
+        errors.append("Name is required and must be at least 2 characters")
+        suggestions.append("Provide a valid full name")
+    
+    # Validate email
+    import re
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not email:
+        errors.append("Email address is required")
+        suggestions.append("Provide a valid email address")
+    elif not re.match(email_pattern, email):
+        errors.append(f"Invalid email format: '{email}'")
+        suggestions.append("Use format: name@company.com")
+    
+    # Validate role
+    valid_roles = ['hr', 'leader', 'employee']
+    if role not in valid_roles:
+        errors.append(f"Invalid role: '{role}'. Must be one of: {', '.join(valid_roles)}")
+        suggestions.append(f"Choose from: {', '.join(valid_roles)}")
+    
+    # Validate department exists
+    if not _get_department_id(department):
+        available_depts = [d['name'] for d in _get_available_departments()]
+        errors.append(f"Department '{department}' not found")
+        suggestions.append(f"Choose from: {', '.join(available_depts)}")
+    
+    if errors:
+        return {
+            "valid": False,
+            "message": "Please fix the following issues:\n• " + "\n• ".join(errors),
+            "suggestions": suggestions
+        }
+    
+    return {"valid": True, "message": "Validation passed"}
+
+def _get_available_departments() -> List[Dict[str, Any]]:
+    """Get list of available departments for dropdowns"""
+    try:
+        departments = execute_query("SELECT id, name FROM departments ORDER BY name")
+        return [{"value": dept['id'], "label": dept['name'], "name": dept['name']} for dept in departments]
+    except:
+        return []
+
+def _get_department_id(department_name: str) -> Optional[int]:
+    """Get department ID by name (case-insensitive)"""
+    try:
+        if department_name.isdigit():
+            return int(department_name)
+        
+        result = execute_query(
+            "SELECT id FROM departments WHERE LOWER(name) LIKE LOWER(%s)",
+            (f"%{department_name}%",)
+        )
+        return result[0]['id'] if result else None
+    except:
+        return None
+
 @tool
 def get_current_datetime() -> str:
     """Get the current date and time."""
     return f"Today is {datetime.now().strftime('%A, %B %d, %Y, %I:%M %p')}."
 
-@tool
-def get_attendance_statistics(days: int = 7, department: str = None, role: str = None) -> Dict[str, Any]:
-    """
-    Calculate comprehensive attendance statistics with rates, trends, and insights.
-    Provides both quantitative data and human-friendly analysis with actionable recommendations.
-    """
-    try:
-        start_date = date.today() - timedelta(days=days)
-        where_conditions = ["a.attendance_date >= %s"]
-        params = [start_date]
-        
-        title_filter_info = "for All Employees"
-        
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-            title_filter_info = f"for '{department}' Department"
-        
-        if role:
-            where_conditions.append("e.role = %s")
-            params.append(role.lower())
-            title_filter_info = f"for employees with role '{role}'"
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-        # Enhanced query with employee and date information
-        detailed_query = f"""
-            SELECT a.status, a.attendance_date, e.name as employee_name, 
-                   e.role, d.name as department_name,
-                   EXTRACT(dow FROM a.attendance_date) as day_of_week
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC
-        """
-        
-        detailed_results = execute_query(detailed_query, params)
-        
-        if not detailed_results:
-            return {
-                "success": False,
-                "error": "No records found.",
-                "human_readable_report": f"I couldn't find any attendance records {title_filter_info} in the last {days} days. This could mean either no one has marked attendance, or the filtering criteria is too specific."
-            }
-        
-        # Calculate comprehensive statistics
-        total_records = len(detailed_results)
-        unique_employees = len(set(r['employee_name'] for r in detailed_results))
-        unique_days = len(set(r['attendance_date'] for r in detailed_results))
-        
-        # Status distribution
-        status_counts = {}
-        for record in detailed_results:
-            status = record['status']
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-        # Calculate attendance rate
-        present_statuses = ['Present', 'Work from home', 'Work from out of Rise']
-        present_count = sum(status_counts.get(status, 0) for status in present_statuses)
-        attendance_rate = round((present_count / total_records) * 100, 1) if total_records > 0 else 0
-        
-        # Leave analysis
-        leave_statuses = ['Planned Leave', 'Sudden Leave', 'Medical Leave', 'Holiday Leave', 'Lieu leave']
-        leave_count = sum(status_counts.get(status, 0) for status in leave_statuses)
-        leave_rate = round((leave_count / total_records) * 100, 1) if total_records > 0 else 0
-        
-        # Day of week analysis
-        dow_names = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 
-                    4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
-        dow_analysis = {}
-        
-        for record in detailed_results:
-            dow = int(record['day_of_week'])
-            dow_name = dow_names[dow]
-            if dow_name not in dow_analysis:
-                dow_analysis[dow_name] = {'total': 0, 'present': 0}
-            
-            dow_analysis[dow_name]['total'] += 1
-            if record['status'] in present_statuses:
-                dow_analysis[dow_name]['present'] += 1
-        
-        # Find best and worst days
-        best_day = None
-        worst_day = None
-        best_rate = 0
-        worst_rate = 100
-        
-        for day, data in dow_analysis.items():
-            if data['total'] > 0:
-                day_rate = (data['present'] / data['total']) * 100
-                if day_rate > best_rate:
-                    best_rate = day_rate
-                    best_day = day
-                if day_rate < worst_rate:
-                    worst_rate = day_rate
-                    worst_day = day
-        
-        # Performance insights
-        performance_level = ""
-        performance_emoji = ""
-        recommendations = []
-        
-        if attendance_rate >= 90:
-            performance_level = "Excellent"
-            recommendations.append("Maintain current high standards")
-            recommendations.append("Consider recognizing top performers")
-        elif attendance_rate >= 80:
-            performance_level = "Good"
-            recommendations.append("Focus on consistent improvement")
-            if leave_rate > 15:
-                recommendations.append("Review leave patterns for optimization")
-        elif attendance_rate >= 70:
-            performance_level = "Needs Improvement"
-            recommendations.append("Implement attendance improvement initiatives")
-            recommendations.append("Consider flexible work arrangements")
-        else:
-            performance_level = "Critical"
-            recommendations.append("Urgent intervention required")
-            recommendations.append("Review HR policies and support systems")
-        
-        # Work from home insights
-        wfh_count = status_counts.get('Work from home', 0)
-        wfh_rate = round((wfh_count / total_records) * 100, 1) if total_records > 0 else 0
-        
-        # Build comprehensive statistics
-        statistics_data = []
-        for status, count in status_counts.items():
-            percentage = round((count / total_records) * 100, 1)
-            statistics_data.append({
-                "status": status,
-                "count": count,
-                "percentage": percentage
-            })
-        
-        # Generate human-friendly report
-        report_lines = [
-            f"Attendance Analysis {title_filter_info}",
-            "-" * 50,
-            f"Analysis Period: Last {days} days ({start_date.strftime('%B %d')} to {date.today().strftime('%B %d, %Y')})",
-            f"Coverage: {unique_employees} employees across {unique_days} working days",
-            "",
-            f"Overall Performance: {performance_level} ({attendance_rate}%)",
-            f"- Total Records Analyzed: {total_records:,}",
-            f"- Overall Attendance Rate: {attendance_rate}% ({present_count:,} present days)",
-            f"- Leave Utilization: {leave_rate}% ({leave_count:,} leave days)",
-            f"- Work from Home: {wfh_rate}% ({wfh_count:,} WFH days)",
-            "",
-            "Daily Performance:"
-        ]
-        
-        # Add day-wise breakdown
-        for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']:
-            if day in dow_analysis and dow_analysis[day]['total'] > 0:
-                data = dow_analysis[day]
-                day_rate = round((data['present'] / data['total']) * 100, 1)
-                trend_indicator = "(Best)" if day == best_day else "(Worst)" if day == worst_day else ""
-                report_lines.append(f"- {day}: {day_rate}% attendance ({data['present']}/{data['total']} records) {trend_indicator}")
-        
-        report_lines.extend([
-            "",
-            "Status Breakdown:"
-        ])
-        
-        # Add detailed status breakdown
-        for item in sorted(statistics_data, key=lambda x: x['count'], reverse=True):
-            report_lines.append(f"- {item['status']}: {item['count']:,} days ({item['percentage']}%)")
-        
-        # Add insights and recommendations
-        if best_day and worst_day and best_day != worst_day:
-            report_lines.extend([
-                "",
-                "Key Insights:",
-                f"- Best Day: {best_day} with {best_rate:.1f}% attendance",
-                f"- Challenging Day: {worst_day} with {worst_rate:.1f}% attendance"
-            ])
-        
-        if recommendations:
-            report_lines.extend([
-                "",
-                "Recommendations:"
-            ])
-            for rec in recommendations:
-                report_lines.append(f"- {rec}")
-        
-        return {
-            "success": True,
-            "title": f"Attendance Statistics {title_filter_info}",
-            "total_records": total_records,
-            "unique_employees": unique_employees,
-            "unique_days": unique_days,
-            "attendance_rate": attendance_rate,
-            "leave_rate": leave_rate,
-            "wfh_rate": wfh_rate,
-            "performance_level": performance_level,
-            "best_day": best_day,
-            "worst_day": worst_day,
-            "statistics": statistics_data,
-            "day_of_week_analysis": dow_analysis,
-            "recommendations": recommendations,
-            "human_readable_report": "\n".join(report_lines)
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Database error: {e}",
-            "human_readable_report": f"I encountered an issue while analyzing the attendance data: {str(e)}. Please try again or contact your system administrator if the problem persists."
-        }
 
-@tool
-def get_comprehensive_trend_analysis(days: int = 30, department: str = None) -> Dict[str, Any]:
-    """
-    Provides deep trend analysis with predictive insights, patterns, and actionable intelligence.
-    This is the most advanced analytics tool for understanding attendance patterns and forecasting.
-    """
-    try:
-        start_date = date.today() - timedelta(days=days)
-        where_conditions = ["a.attendance_date >= %s"]
-        params = [start_date]
-        
-        scope_info = "Company-wide"
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-            scope_info = f"{department} Department"
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-        # Comprehensive data query
-        trend_query = f"""
-            SELECT 
-                a.attendance_date,
-                a.status,
-                e.name as employee_name,
-                e.role,
-                d.name as department_name,
-                EXTRACT(dow FROM a.attendance_date) as day_of_week,
-                EXTRACT(week FROM a.attendance_date) as week_number,
-                EXTRACT(month FROM a.attendance_date) as month_number
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC
-        """
-        
-        results = execute_query(trend_query, params)
-        
-        if not results:
-            return {
-                "success": False,
-                "message": f"No attendance data available for {scope_info} in the last {days} days for trend analysis."
-            }
-        
-        # Organize data for trend analysis
-        daily_trends = {}
-        weekly_trends = {}
-        employee_patterns = {}
-        department_trends = {}
-        
-        present_statuses = ['Present', 'Work from home', 'Work from out of Rise']
-        
-        for record in results:
-            date_key = record['attendance_date'].strftime('%Y-%m-%d')
-            week_key = f"Week {int(record['week_number'])}"
-            employee = record['employee_name']
-            dept = record['department_name']
-            
-            # Daily trends
-            if date_key not in daily_trends:
-                daily_trends[date_key] = {'total': 0, 'present': 0, 'date': record['attendance_date']}
-            daily_trends[date_key]['total'] += 1
-            if record['status'] in present_statuses:
-                daily_trends[date_key]['present'] += 1
-            
-            # Weekly trends
-            if week_key not in weekly_trends:
-                weekly_trends[week_key] = {'total': 0, 'present': 0}
-            weekly_trends[week_key]['total'] += 1
-            if record['status'] in present_statuses:
-                weekly_trends[week_key]['present'] += 1
-            
-            # Employee patterns
-            if employee not in employee_patterns:
-                employee_patterns[employee] = {'total': 0, 'present': 0, 'dept': dept, 'role': record['role']}
-            employee_patterns[employee]['total'] += 1
-            if record['status'] in present_statuses:
-                employee_patterns[employee]['present'] += 1
-            
-            # Department trends
-            if dept not in department_trends:
-                department_trends[dept] = {'total': 0, 'present': 0}
-            department_trends[dept]['total'] += 1
-            if record['status'] in present_statuses:
-                department_trends[dept]['present'] += 1
-        
-        # Calculate trend metrics
-        daily_rates = []
-        for day_data in daily_trends.values():
-            rate = (day_data['present'] / day_data['total']) * 100 if day_data['total'] > 0 else 0
-            daily_rates.append(rate)
-        
-        # Trend direction analysis
-        if len(daily_rates) >= 7:
-            recent_week = sum(daily_rates[-7:]) / 7
-            previous_week = sum(daily_rates[-14:-7]) / 7 if len(daily_rates) >= 14 else recent_week
-            trend_direction = "Improving" if recent_week > previous_week + 2 else "Declining" if recent_week < previous_week - 2 else "Stable"
-            trend_change = round(recent_week - previous_week, 1)
-        else:
-            trend_direction = "Insufficient data"
-            trend_change = 0
-        
-        # Best and worst performers
-        top_performers = sorted(
-            [(emp, data['present']/data['total']*100) for emp, data in employee_patterns.items() if data['total'] >= 3],
-            key=lambda x: x[1], reverse=True
-        )[:5]
-        
-        concerning_patterns = sorted(
-            [(emp, data['present']/data['total']*100) for emp, data in employee_patterns.items() if data['total'] >= 3],
-            key=lambda x: x[1]
-        )[:3]
-        
-        # Department comparison
-        dept_performance = []
-        for dept, data in department_trends.items():
-            rate = (data['present'] / data['total']) * 100 if data['total'] > 0 else 0
-            dept_performance.append((dept, rate, data['total']))
-        dept_performance.sort(key=lambda x: x[1], reverse=True)
-        
-        # Generate insights
-        insights = []
-        
-        # Overall trend insight
-        overall_rate = sum(daily_rates) / len(daily_rates) if daily_rates else 0
-        if overall_rate >= 90:
-            insights.append("Exceptional attendance performance across the organization")
-        elif overall_rate >= 80:
-            insights.append("Strong attendance performance with room for optimization")
-        else:
-            insights.append("Attendance performance requires immediate attention")
-        
-        # Trend insights
-        if "Improving" in trend_direction:
-            insights.append(f"Positive trend: Attendance improved by {trend_change}% in the last week")
-        elif "Declining" in trend_direction:
-            insights.append(f"Attention needed: Attendance declined by {abs(trend_change)}% in the last week")
-        
-        # Weekly pattern insights
-        if len(weekly_trends) > 2:
-            week_rates = [(week, (data['present']/data['total'])*100) for week, data in weekly_trends.items() if data['total'] > 0]
-            if week_rates:
-                best_week = max(week_rates, key=lambda x: x[1])
-                worst_week = min(week_rates, key=lambda x: x[1])
-                insights.append(f"Best performing week: {best_week[0]} ({best_week[1]:.1f}% attendance)")
-                if best_week[1] - worst_week[1] > 10:
-                    insights.append(f"High weekly variation detected (best: {best_week[1]:.1f}%, worst: {worst_week[1]:.1f}%)")
-        
-        # Build comprehensive report
-        report_lines = [
-            f"Comprehensive Trend Analysis - {scope_info}",
-            "-" * 50,
-            f"Analysis Period: {days} days ({start_date.strftime('%B %d')} - {date.today().strftime('%B %d, %Y')})",
-            f"Data Points: {len(results):,} attendance records analyzed",
-            "",
-            f"Overall Performance: {overall_rate:.1f}% Average Attendance",
-            f"Trend Direction: {trend_direction}",
-            "",
-            "Key Insights:"
-        ]
-        
-        for insight in insights:
-            report_lines.append(f"- {insight}")
-        
-        # Top performers section
-        if top_performers:
-            report_lines.extend([
-                "",
-                "Top Performers:"
-            ])
-            for i, (emp, rate) in enumerate(top_performers, 1):
-                emp_data = employee_patterns[emp]
-                report_lines.append(f"{i}. {emp} ({emp_data['dept']}) - {rate:.1f}% attendance")
-        
-        # Concerning patterns
-        if concerning_patterns and concerning_patterns[0][1] < 80:
-            report_lines.extend([
-                "",
-                "Attention Required:"
-            ])
-            for emp, rate in concerning_patterns:
-                if rate < 80:
-                    emp_data = employee_patterns[emp]
-                    report_lines.append(f"- {emp} ({emp_data['dept']}) - {rate:.1f}% attendance")
-        
-        # Department comparison
-        if len(dept_performance) > 1:
-            report_lines.extend([
-                "",
-                "Department Performance:"
-            ])
-            for dept, rate, total in dept_performance:
-                report_lines.append(f"- {dept}: {rate:.1f}% ({total:,} records)")
-        
-        # Weekly trends
-        if len(weekly_trends) > 1:
-            report_lines.extend([
-                "",
-                "Weekly Trends:"
-            ])
-            for week in sorted(weekly_trends.keys(), key=lambda x: int(x.split()[1])):
-                data = weekly_trends[week]
-                rate = (data['present'] / data['total']) * 100 if data['total'] > 0 else 0
-                trend_indicator = "(Above avg)" if rate >= overall_rate else "(Below avg)"
-                report_lines.append(f"- {week}: {rate:.1f}% attendance {trend_indicator}")
-        
-        # Recommendations
-        recommendations = []
-        if overall_rate < 85:
-            recommendations.append("Implement attendance improvement program")
-            recommendations.append("Review and address underlying issues")
-        if "Declining" in trend_direction:
-            recommendations.append("Investigate recent changes affecting attendance")
-            recommendations.append("Consider employee engagement initiatives")
-        if concerning_patterns:
-            recommendations.append("Provide targeted support for underperforming employees")
-        if len(dept_performance) > 1 and dept_performance[0][1] - dept_performance[-1][1] > 15:
-            recommendations.append("Address departmental attendance disparities")
-        
-        if recommendations:
-            report_lines.extend([
-                "",
-                "Strategic Recommendations:"
-            ])
-            for rec in recommendations:
-                report_lines.append(f"- {rec}")
-        
-        return {
-            "success": True,
-            "scope": scope_info,
-            "analysis_period": days,
-            "overall_rate": round(overall_rate, 1),
-            "trend_direction": trend_direction,
-            "trend_change": trend_change,
-            "top_performers": top_performers[:3],
-            "concerning_patterns": [emp for emp, rate in concerning_patterns if rate < 80],
-            "department_performance": dept_performance,
-            "insights": insights,
-            "recommendations": recommendations,
-            "human_readable_report": "\n".join(report_lines)
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "human_readable_report": f"I encountered an issue while performing the trend analysis: {str(e)}. This might be due to insufficient data or a temporary system issue."
-        }
 
 @tool
 def escalate_to_human(reason: str, context: str, urgency: str = "normal") -> Dict[str, Any]:
@@ -1997,1003 +1776,956 @@ def ask_company_documents(query: str) -> str:
         return f"Error searching company documents: {e}"
 
 # ==============================================================================
-# ENHANCED ATTENDANCE TOOLS WITH HUMAN LOOP FUNCTIONALITY
+# UNIFIED ATTENDANCE TOOLS (CRUD Operations)
 # ==============================================================================
 
 @tool
-def get_enhanced_attendance_summary(
-    date_filter: str = "this_month",  
-    start_date: str = "",  
-    end_date: str = "",    
-    role_filter: str = "all"  
-) -> Dict[str, Any]:
+def query_attendance_intelligent(query: str) -> Dict[str, Any]:
     """
-    Get a comprehensive attendance summary with human loop functionality.
-    First shows summary statistics, then asks for user confirmation before showing detailed data.
+    Intelligent attendance query tool that understands natural language requests.
+    
+    Handles queries like:
+    - "who works today" / "today's attendance" 
+    - "marketing team today's attendance" / "rise ai team department today's attendance"
+    - "John's attendance" / "attendance for John Smith"
+    - "who is on leave today" / "absent employees today"
+    - "attendance last week" / "attendance this month"
+    - "attendance from 2024-01-01 to 2024-01-31"
     
     Parameters:
-    - date_filter: "today", "this_week", "this_month", "date_range", "last_week", "last_month"
-    - start_date: Custom start date (YYYY-MM-DD format, required if date_filter="date_range")
-    - end_date: Custom end date (YYYY-MM-DD format, required if date_filter="date_range")  
-    - role_filter: "all", "leader", "hr", "employee" (excludes labour as they're in separate table)
+    - query: Natural language query about attendance
     
-    Returns summary first, then generates follow-up questions for detailed data.
+    Returns:
+    - success: bool
+    - message: Human-readable summary
+    - data: Structured attendance data
+    - filters_applied: What filters were understood from the query
     """
     try:
-        # Calculate date range based on filter
+        import re
+        from datetime import datetime, timedelta, date
+        
+        # Initialize query parameters
+        employee_name = None
+        department = None
+        status_filter = None
+        start_date = None
+        end_date = None
+        days = 7
+        
+        query_lower = query.lower().strip()
+        
+        # Extract date information
         today = date.today()
         
-        if date_filter == "today":
-            query_start_date = today
-            query_end_date = today
-            period_desc = "Today"
-        elif date_filter == "this_week":
-            # Start from Monday of current week
-            days_since_monday = today.weekday()
-            query_start_date = today - timedelta(days=days_since_monday)
-            query_end_date = today
-            period_desc = "This Week"
-        elif date_filter == "last_week":
-            # Start from Monday of last week
-            days_since_monday = today.weekday()
-            last_monday = today - timedelta(days=days_since_monday + 7)
-            query_start_date = last_monday
-            query_end_date = last_monday + timedelta(days=6)
-            period_desc = "Last Week"
-        elif date_filter == "this_month":
-            query_start_date = today.replace(day=1)
-            query_end_date = today
-            period_desc = "This Month"
-        elif date_filter == "last_month":
-            # Get first day of last month
+        # Date pattern matching
+        if "today" in query_lower:
+            start_date = end_date = today
+        elif "yesterday" in query_lower:
+            yesterday = today - timedelta(days=1)
+            start_date = end_date = yesterday
+        elif "this week" in query_lower:
+            start_date = today - timedelta(days=today.weekday())
+            end_date = today
+        elif "last week" in query_lower:
+            start_of_last_week = today - timedelta(days=today.weekday() + 7)
+            end_of_last_week = start_of_last_week + timedelta(days=6)
+            start_date = start_of_last_week
+            end_date = end_of_last_week
+        elif "this month" in query_lower:
+            start_date = today.replace(day=1)
+            end_date = today
+        elif "last month" in query_lower:
             first_day_this_month = today.replace(day=1)
-            query_end_date = first_day_this_month - timedelta(days=1)
-            query_start_date = query_end_date.replace(day=1)
-            period_desc = "Last Month"
-        elif date_filter == "date_range":
-            if not start_date or not end_date:
-                return {
-                    "success": False,
-                    "error": "start_date and end_date are required when using date_range filter",
-                    "requires_confirmation": False
-                }
-            try:
-                query_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-                query_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-                period_desc = f"{start_date} to {end_date}"
-            except ValueError:
-                return {
-                    "success": False,
-                    "error": "Invalid date format. Use YYYY-MM-DD",
-                    "requires_confirmation": False
-                }
-        else:
-            # Default to this month
-            query_start_date = today.replace(day=1)
-            query_end_date = today
-            period_desc = "This Month"
+            last_day_last_month = first_day_this_month - timedelta(days=1)
+            start_date = last_day_last_month.replace(day=1)
+            end_date = last_day_last_month
         
-        # Build query conditions
-        where_conditions = ["a.attendance_date >= %s", "a.attendance_date <= %s"]
-        params = [query_start_date, query_end_date]
+        # Look for specific date patterns (YYYY-MM-DD)
+        date_pattern = r'\b(\d{4}-\d{2}-\d{2})\b'
+        dates_found = re.findall(date_pattern, query)
+        if len(dates_found) == 1:
+            start_date = end_date = datetime.strptime(dates_found[0], '%Y-%m-%d').date()
+        elif len(dates_found) == 2:
+            start_date = datetime.strptime(dates_found[0], '%Y-%m-%d').date()
+            end_date = datetime.strptime(dates_found[1], '%Y-%m-%d').date()
         
-        role_desc = "All Employees"
-        if role_filter != "all":
-            valid_roles = ["leader", "hr", "employee"]
-            if role_filter.lower() not in valid_roles:
-                return {
-                    "success": False,
-                    "error": f"Invalid role filter. Valid options: {', '.join(valid_roles)}",
-                    "requires_confirmation": False
-                }
-            where_conditions.append("e.role = %s")
-            params.append(role_filter.lower())
-            role_desc = f"{role_filter.title()} Role"
+        # Extract department information
+        dept_patterns = [
+            r'(?:department|team|dept)\s+(\w+)',
+            r'(\w+)\s+(?:department|team|dept)',
+            r'rise\s+ai\s+team',
+            r'marketing\s+team',
+            r'hr\s+team',
+            r'tech\s+team'
+        ]
         
-        where_clause = "WHERE " + " AND ".join(where_conditions)
+        for pattern in dept_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                if "rise ai" in query_lower or "rise ai team" in query_lower:
+                    department = "rise ai"
+                else:
+                    department = match.group(1) if match.groups() else match.group(0)
+                break
         
-        # Execute summary query
-        summary_query = f"""
-            SELECT 
-                COUNT(*) as total_records,
-                COUNT(DISTINCT e.id) as unique_employees,
-                COUNT(DISTINCT a.attendance_date) as unique_days,
-                COUNT(DISTINCT d.name) as departments_involved,
-                a.status,
-                e.role,
-                d.name as department_name,
-                COUNT(*) as status_count
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id  
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            GROUP BY a.status, e.role, d.name
+        # Extract employee name (look for quoted names or common name patterns)
+        name_patterns = [
+            r"for\s+([A-Za-z\s]+?)(?:\s|$)",
+            r"([A-Za-z]+\s+[A-Za-z]+)'s",
+            r'"([^"]+)"',
+            r"'([^']+)'"
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, query)
+            if match:
+                potential_name = match.group(1).strip()
+                # Avoid capturing common words as names
+                if not any(word in potential_name.lower() for word in ['attendance', 'team', 'department', 'today', 'yesterday']):
+                    employee_name = potential_name
+                    break
+        
+        # Extract status information
+        status_keywords = {
+            'present': 'Present',
+            'absent': ['Sudden Leave', 'Medical Leave', 'Planned Leave'],
+            'leave': ['Sudden Leave', 'Medical Leave', 'Planned Leave', 'Holiday Leave', 'Lieu leave'],
+            'wfh': 'Work from home',
+            'work from home': 'Work from home',
+            'remote': 'Work from home',
+            'sick': 'Medical Leave',
+            'medical leave': 'Medical Leave',
+            'planned leave': 'Planned Leave',
+            'holiday': 'Holiday Leave'
+        }
+        
+        for keyword, status in status_keywords.items():
+            if keyword in query_lower:
+                if isinstance(status, list):
+                    status_filter = status
+                else:
+                    status_filter = [status]
+                break
+        
+        # If no specific date is mentioned and no "today" keyword, default to today for daily queries
+        if not start_date and not end_date:
+            if any(word in query_lower for word in ['who works', 'who is working', "today's"]):
+                start_date = end_date = today
+            else:
+                # Default to last 7 days for general queries
+                start_date = today - timedelta(days=7)
+                end_date = today
+        
+        # Build SQL query
+        where_conditions = []
+        params = []
+        
+        # Date filtering
+        if start_date and end_date:
+            if start_date == end_date:
+                where_conditions.append("a.attendance_date = %s")
+                params.append(start_date)
+            else:
+                where_conditions.append("a.attendance_date >= %s AND a.attendance_date <= %s")
+                params.extend([start_date, end_date])
+        
+        # Employee filtering
+        if employee_name:
+            where_conditions.append("e.name ILIKE %s")
+            params.append(f"%{employee_name}%")
+        
+        # Department filtering
+        if department:
+            where_conditions.append("d.name ILIKE %s")
+            params.append(f"%{department}%")
+        
+        # Status filtering
+        if status_filter:
+            if len(status_filter) == 1:
+                where_conditions.append("a.status = %s")
+                params.append(status_filter[0])
+            else:
+                placeholders = ', '.join(['%s'] * len(status_filter))
+                where_conditions.append(f"a.status IN ({placeholders})")
+                params.extend(status_filter)
+        
+        # Construct final query
+        base_query = """
+        SELECT 
+            a.id,
+            a.attendance_date,
+            a.status,
+            a.check_in_time,
+            a.check_out_time,
+            a.notes,
+            e.id as employee_id,
+            e.name as employee_name,
+            e.email as employee_email,
+            e.role as employee_role,
+            d.name as department_name
+        FROM attendances a
+        JOIN employees e ON a.employee_id = e.id
+        JOIN departments d ON e.department_id = d.id
         """
         
-        summary_results = execute_query(summary_query, params)
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
         
-        if not summary_results:
-            return {
-                "success": False,
-                "message": f"No attendance records found for {role_desc} in {period_desc}",
-                "requires_confirmation": False,
-                "period": period_desc,
-                "role_filter": role_desc
-            }
-        
-        # Process summary statistics
-        total_records = 0
-        unique_employees = set()
-        unique_days = set()
-        departments = set()
-        status_summary = {}
-        role_breakdown = {}
-        dept_breakdown = {}
-        
-        for record in summary_results:
-            total_records += record['status_count']
-            unique_employees.add(record.get('unique_employees'))
-            departments.add(record['department_name'])
-            
-            # Status summary
-            status = record['status']
-            if status not in status_summary:
-                status_summary[status] = 0
-            status_summary[status] += record['status_count']
-            
-            # Role breakdown
-            role = record['role']
-            if role not in role_breakdown:
-                role_breakdown[role] = {'total': 0, 'by_status': {}}
-            role_breakdown[role]['total'] += record['status_count']
-            if status not in role_breakdown[role]['by_status']:
-                role_breakdown[role]['by_status'][status] = 0
-            role_breakdown[role]['by_status'][status] += record['status_count']
-            
-            # Department breakdown  
-            dept = record['department_name']
-            if dept not in dept_breakdown:
-                dept_breakdown[dept] = 0
-            dept_breakdown[dept] += record['status_count']
-        
-        # Calculate attendance rate
-        present_statuses = ['Present', 'Work from home', 'Work from out of Rise']
-        present_count = sum(status_summary.get(status, 0) for status in present_statuses)
-        attendance_rate = round((present_count / total_records) * 100, 1) if total_records > 0 else 0
-        
-        # Get actual unique counts
-        unique_employee_count = len(unique_employees) if unique_employees != {None} else 0
-        unique_days_count = (query_end_date - query_start_date).days + 1
-        departments_count = len(departments)
-        
-        # Create summary response
-        summary_lines = [
-            f"Attendance Summary - {role_desc} ({period_desc})",
-            "-" * 50,
-            f"Overview:",
-            f"- Total Records: {total_records:,} attendance entries",
-            "",
-            f"Status Breakdown:"
-        ]
-        
-        # Add status breakdown
-        for status, count in sorted(status_summary.items(), key=lambda x: x[1], reverse=True):
-            percentage = round((count / total_records) * 100, 1)
-            summary_lines.append(f"- {status}: {count:,} ({percentage}%)")
-        
-        # Add department breakdown if multiple departments
-        if len(dept_breakdown) > 1:
-            summary_lines.extend([
-                "",
-                f"Top Departments:"
-            ])
-            sorted_depts = sorted(dept_breakdown.items(), key=lambda x: x[1], reverse=True)[:5]
-            for dept, count in sorted_depts:
-                percentage = round((count / total_records) * 100, 1)
-                summary_lines.append(f"- {dept}: {count:,} records ({percentage}%)")
-        
-        return {
-            "success": True,
-            "summary_type": "overview",
-            "period": period_desc,
-            "role_filter": role_desc,
-            "total_records": total_records,
-            "unique_employees": unique_employee_count,
-            "departments_involved": departments_count,
-            "attendance_rate": attendance_rate,
-            "status_summary": status_summary,
-            "requires_confirmation": True,
-            "follow_up_question": "Would you like me to show detailed breakdown with individual employee data and trends?",
-            "human_readable_report": "\n".join(summary_lines),
-            "query_params": {
-                "date_filter": date_filter,
-                "start_date": str(query_start_date),
-                "end_date": str(query_end_date),
-                "role_filter": role_filter
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in get_enhanced_attendance_summary: {e}")
-        return {
-            "success": False,
-            "error": f"Failed to generate attendance summary: {str(e)}",
-            "requires_confirmation": False
-        }
-
-@tool
-def get_role_attendance_report(
-    role: str,  
-    period: str = "this_month",
-    include_task_leaders: bool = True,
-    start_date: str = "",
-    end_date: str = ""
-) -> Dict[str, Any]:
-    """
-    Get detailed attendance report specifically filtered by employee role.
-    Supports special handling for task group leaders.
-    
-    Parameters:
-    - role: "leader", "hr", "employee" (excludes labour as they're in separate table)
-    - period: "today", "this_week", "this_month", "last_week", "last_month", "date_range"
-    - include_task_leaders: Whether to include employees who are task group leaders
-    - start_date: Custom start date (YYYY-MM-DD, required if period="date_range")
-    - end_date: Custom end date (YYYY-MM-DD, required if period="date_range")
-    """
-    try:
-        # Validate role
-        valid_roles = ["leader", "hr", "employee"]
-        if role.lower() not in valid_roles:
-            return {
-                "success": False,
-                "error": f"Invalid role '{role}'. Valid options: {', '.join(valid_roles)}"
-            }
-        
-        # Calculate date range
-        today = date.today()
-        
-        if period == "today":
-            query_start_date = today
-            query_end_date = today
-            period_desc = "Today"
-        elif period == "this_week":
-            days_since_monday = today.weekday()
-            query_start_date = today - timedelta(days=days_since_monday)
-            query_end_date = today
-            period_desc = "This Week"
-        elif period == "last_week":
-            days_since_monday = today.weekday()
-            last_monday = today - timedelta(days=days_since_monday + 7)
-            query_start_date = last_monday
-            query_end_date = last_monday + timedelta(days=6)
-            period_desc = "Last Week"
-        elif period == "this_month":
-            query_start_date = today.replace(day=1)
-            query_end_date = today
-            period_desc = "This Month"
-        elif period == "last_month":
-            first_day_this_month = today.replace(day=1)
-            query_end_date = first_day_this_month - timedelta(days=1)
-            query_start_date = query_end_date.replace(day=1)
-            period_desc = "Last Month"
-        elif period == "date_range":
-            if not start_date or not end_date:
-                return {
-                    "success": False,
-                    "error": "start_date and end_date are required when using date_range period"
-                }
-            try:
-                query_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-                query_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-                period_desc = f"{start_date} to {end_date}"
-            except ValueError:
-                return {
-                    "success": False,
-                    "error": "Invalid date format. Use YYYY-MM-DD"
-                }
-        else:
-            query_start_date = today.replace(day=1)
-            query_end_date = today
-            period_desc = "This Month"
-        
-        # Build base query
-        where_conditions = [
-            "a.attendance_date >= %s", 
-            "a.attendance_date <= %s",
-            "e.role = %s"
-        ]
-        params = [query_start_date, query_end_date, role.lower()]
-        
-        # Add task leader filter if requested
-        task_leader_join = ""
-        if include_task_leaders and role.lower() == "leader":
-            task_leader_join = "LEFT JOIN task_group_leaders tgl ON e.id = tgl.employee_id"
-            # Note: We don't filter here, just join to get the data
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-        # Execute detailed query
-        detailed_query = f"""
-            SELECT 
-                e.id as employee_id,
-                e.name as employee_name,
-                e.email as employee_email,
-                e.role as employee_role,
-                d.name as department_name,
-                a.attendance_date,
-                a.status,
-                a.notes,
-                a.check_in_time,
-                a.check_out_time,
-                CASE WHEN tgl.employee_id IS NOT NULL THEN true ELSE false END as is_task_leader
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {task_leader_join}
-            {where_clause}
-            ORDER BY e.name, a.attendance_date DESC
-        """
-        
-        detailed_results = execute_query(detailed_query, params)
-        
-        if not detailed_results:
-            return {
-                "success": False,
-                "message": f"No attendance records found for {role} role in {period_desc}",
-                "role": role,
-                "period": period_desc
-            }
-        
-        # Process results
-        employee_data = {}
-        total_records = len(detailed_results)
-        status_summary = {}
-        department_breakdown = {}
-        task_leader_count = 0
-        
-        present_statuses = ['Present', 'Work from home', 'Work from out of Rise']
-        
-        for record in detailed_results:
-            emp_id = record['employee_id']
-            emp_name = record['employee_name']
-            
-            # Initialize employee data
-            if emp_id not in employee_data:
-                employee_data[emp_id] = {
-                    'name': emp_name,
-                    'email': record['employee_email'],
-                    'department': record['department_name'],
-                    'is_task_leader': record.get('is_task_leader', False),
-                    'attendance_records': [],
-                    'total_days': 0,
-                    'present_days': 0,
-                    'status_breakdown': {}
-                }
-                
-                if record.get('is_task_leader'):
-                    task_leader_count += 1
-            
-            # Add attendance record
-            employee_data[emp_id]['attendance_records'].append({
-                'date': record['attendance_date'],
-                'status': record['status'],
-                'notes': record.get('notes', ''),
-                'check_in_time': record.get('check_in_time'),
-                'check_out_time': record.get('check_out_time')
-            })
-            
-            # Update employee stats
-            employee_data[emp_id]['total_days'] += 1
-            status = record['status']
-            if status in present_statuses:
-                employee_data[emp_id]['present_days'] += 1
-            
-            # Update employee status breakdown
-            if status not in employee_data[emp_id]['status_breakdown']:
-                employee_data[emp_id]['status_breakdown'][status] = 0
-            employee_data[emp_id]['status_breakdown'][status] += 1
-            
-            # Update overall status summary
-            if status not in status_summary:
-                status_summary[status] = 0
-            status_summary[status] += 1
-            
-            # Update department breakdown
-            dept = record['department_name']
-            if dept not in department_breakdown:
-                department_breakdown[dept] = {'total': 0, 'present': 0, 'employees': set()}
-            department_breakdown[dept]['total'] += 1
-            department_breakdown[dept]['employees'].add(emp_name)
-            if status in present_statuses:
-                department_breakdown[dept]['present'] += 1
-        
-        # Calculate overall statistics
-        unique_employees = len(employee_data)
-        total_present = sum(status_summary.get(status, 0) for status in present_statuses)
-        overall_attendance_rate = round((total_present / total_records) * 100, 1) if total_records > 0 else 0
-        
-        # Generate employee performance ranking
-        employee_performance = []
-        for emp_id, data in employee_data.items():
-            attendance_rate = round((data['present_days'] / data['total_days']) * 100, 1) if data['total_days'] > 0 else 0
-            employee_performance.append({
-                'name': data['name'],
-                'department': data['department'],
-                'attendance_rate': attendance_rate,
-                'total_days': data['total_days'],
-                'present_days': data['present_days'],
-                'is_task_leader': data['is_task_leader'],
-                'status_breakdown': data['status_breakdown']
-            })
-        
-        # Sort by attendance rate
-        employee_performance.sort(key=lambda x: x['attendance_rate'], reverse=True)
-        
-        # Build report
-        role_title = role.title()
-        report_lines = [
-            f"{role_title} Attendance Report - {period_desc}",
-            "-" * 50,
-            f"Overview:",
-            f"- Total {role_title}s: {unique_employees} employees",
-            f"- Total Records: {total_records:,} attendance entries",
-            f"- Overall Attendance Rate: {overall_attendance_rate}% ({'Excellent' if overall_attendance_rate >= 90 else 'Good' if overall_attendance_rate >= 80 else 'Needs attention'})",
-            f"- Departments Involved: {len(department_breakdown)} departments"
-        ]
-        
-        # Add task leader info for leaders
-        if role.lower() == "leader" and include_task_leaders:
-            report_lines.append(f"- Task Group Leaders: {task_leader_count} out of {unique_employees} leaders")
-        
-        # Status breakdown
-        report_lines.extend([
-            "",
-            "Status Breakdown:"
-        ])
-        
-        for status, count in sorted(status_summary.items(), key=lambda x: x[1], reverse=True):
-            percentage = round((count / total_records) * 100, 1)
-            report_lines.append(f"- {status}: {count:,} ({percentage}%)")
-        
-        # Department performance
-        if len(department_breakdown) > 1:
-            report_lines.extend([
-                "",
-                "Department Performance:"
-            ])
-            
-            dept_performance = []
-            for dept, data in department_breakdown.items():
-                dept_rate = round((data['present'] / data['total']) * 100, 1) if data['total'] > 0 else 0
-                dept_performance.append((dept, dept_rate, len(data['employees']), data['total']))
-            
-            dept_performance.sort(key=lambda x: x[1], reverse=True)
-            
-            for dept, rate, emp_count, records in dept_performance:
-                report_lines.append(f"- {dept}: {rate}% ({emp_count} {role}s, {records} records)")
-        
-        # Top and concerning performers
-        top_performers = employee_performance[:5]
-        concerning_performers = [emp for emp in employee_performance if emp['attendance_rate'] < 80]
-        
-        if top_performers:
-            report_lines.extend([
-                "",
-                f"Top Performing {role_title}s:"
-            ])
-            for i, emp in enumerate(top_performers, 1):
-                task_leader_indicator = " (Task Leader)" if emp.get('is_task_leader') else ""
-                report_lines.append(f"{i}. {emp['name']}{task_leader_indicator} ({emp['department']}) - {emp['attendance_rate']}%")
-        
-        if concerning_performers:
-            report_lines.extend([
-                "",
-                f"{role_title}s Needing Attention:"
-            ])
-            for emp in concerning_performers[:5]:  # Show top 5 concerning
-                task_leader_indicator = " (Task Leader)" if emp.get('is_task_leader') else ""
-                report_lines.append(f"- {emp['name']}{task_leader_indicator} ({emp['department']}) - {emp['attendance_rate']}%")
-        
-        return {
-            "success": True,
-            "role": role,
-            "period": period_desc,
-            "total_employees": unique_employees,
-            "total_records": total_records,
-            "overall_attendance_rate": overall_attendance_rate,
-            "task_leaders_count": task_leader_count if role.lower() == "leader" else 0,
-            "status_summary": status_summary,
-            "department_breakdown": department_breakdown,
-            "employee_performance": employee_performance,
-            "top_performers": top_performers,
-            "concerning_performers": concerning_performers,
-            "human_readable_report": "\n".join(report_lines)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in get_role_attendance_report: {e}")
-        return {
-            "success": False,
-            "error": f"Failed to generate role attendance report: {str(e)}"
-        }
-
-@tool
-def get_employees_by_attendance_status(
-    attendance_date: str = "",  
-    date_period: str = "",      
-    status_filter: str = "all", 
-    role_filter: str = "all"    
-) -> Dict[str, Any]:
-    """
-    Get employee names and details filtered by attendance status for specific dates or periods.
-    Useful for finding who was present, absent, on leave, etc. for specific dates or time periods.
-    
-    Parameters:
-    - attendance_date: Specific date (YYYY-MM-DD format) or "today" - use this OR date_period, not both
-    - date_period: "this_week", "this_month", "last_week", "last_month" - use this OR attendance_date
-    - status_filter: "all", "Present", "Work from home", "Planned Leave", "Sudden Leave", etc.
-    - role_filter: "all", "leader", "hr", "employee" (excludes labour as they're in separate table)
-    
-    Returns list of employees with their attendance details for the specified criteria.
-    """
-    try:
-        # Validate inputs
-        if attendance_date and date_period:
-            return {
-                "success": False,
-                "error": "Please specify either attendance_date OR date_period, not both"
-            }
-        
-        if not attendance_date and not date_period:
-            # Default to today
-            attendance_date = "today"
-        
-        # Calculate date range
-        today = date.today()
-        
-        if attendance_date:
-            if attendance_date.lower() == "today":
-                query_start_date = today
-                query_end_date = today
-                period_desc = "Today"
-            else:
-                try:
-                    query_start_date = datetime.strptime(attendance_date, "%Y-%m-%d").date()
-                    query_end_date = query_start_date
-                    period_desc = attendance_date
-                except ValueError:
-                    return {
-                        "success": False,
-                        "error": "Invalid date format. Use YYYY-MM-DD or 'today'"
-                    }
-        else:
-            # Handle date period
-            if date_period == "this_week":
-                days_since_monday = today.weekday()
-                query_start_date = today - timedelta(days=days_since_monday)
-                query_end_date = today
-                period_desc = "This Week"
-            elif date_period == "last_week":
-                days_since_monday = today.weekday()
-                last_monday = today - timedelta(days=days_since_monday + 7)
-                query_start_date = last_monday
-                query_end_date = last_monday + timedelta(days=6)
-                period_desc = "Last Week"
-            elif date_period == "this_month":
-                query_start_date = today.replace(day=1)
-                query_end_date = today
-                period_desc = "This Month"
-            elif date_period == "last_month":
-                first_day_this_month = today.replace(day=1)
-                query_end_date = first_day_this_month - timedelta(days=1)
-                query_start_date = query_end_date.replace(day=1)
-                period_desc = "Last Month"
-            else:
-                return {
-                    "success": False,
-                    "error": "Invalid date_period. Valid options: 'this_week', 'this_month', 'last_week', 'last_month'"
-                }
-        
-        # Build query conditions
-        where_conditions = ["a.attendance_date >= %s", "a.attendance_date <= %s"]
-        params = [query_start_date, query_end_date]
-        
-        # Add status filter
-        status_desc = "All Statuses"
-        if status_filter != "all":
-            valid_statuses = ["Present", "Work from home", "Planned Leave", "Sudden Leave", 
-                            "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"]
-            if status_filter not in valid_statuses:
-                return {
-                    "success": False,
-                    "error": f"Invalid status filter. Valid options: {', '.join(valid_statuses)}"
-                }
-            where_conditions.append("a.status = %s")
-            params.append(status_filter)
-            status_desc = status_filter
-        
-        # Add role filter
-        role_desc = "All Employees"
-        if role_filter != "all":
-            valid_roles = ["leader", "hr", "employee"]
-            if role_filter.lower() not in valid_roles:
-                return {
-                    "success": False,
-                    "error": f"Invalid role filter. Valid options: {', '.join(valid_roles)}"
-                }
-            where_conditions.append("e.role = %s")
-            params.append(role_filter.lower())
-            role_desc = f"{role_filter.title()} Role"
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
+        base_query += " ORDER BY a.attendance_date DESC, e.name ASC"
         
         # Execute query
-        query = f"""
-            SELECT 
-                e.id as employee_id,
-                e.name as employee_name,
-                e.email as employee_email,
-                e.role as employee_role,
-                e.phone_number,
-                d.name as department_name,
-                a.attendance_date,
-                a.status,
-                a.notes,
-                a.check_in_time,
-                a.check_out_time,
-                CASE WHEN tgl.employee_id IS NOT NULL THEN true ELSE false END as is_task_leader
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            LEFT JOIN task_group_leaders tgl ON e.id = tgl.employee_id
-            {where_clause}
-            ORDER BY a.attendance_date DESC, e.name
-        """
-        
-        results = execute_query(query, params)
+        results = execute_query(base_query, tuple(params))
         
         if not results:
             return {
-                "success": False,
-                "message": f"No employees found with {status_desc} status for {role_desc} in {period_desc}",
-                "period": period_desc,
-                "status_filter": status_desc,
-                "role_filter": role_desc
+                "success": True,
+                "message": "No attendance records found matching your query.",
+                "data": [],
+                "total_records": 0,
+                "filters_applied": {
+                    "employee_name": employee_name,
+                    "department": department,
+                    "status_filter": status_filter,
+                    "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                    "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+                },
+                "query_understood": query
             }
         
-        # Process results
-        employee_list = []
-        unique_employees = {}
-        date_breakdown = {}
-        department_summary = {}
-        status_summary = {}
+        # Generate human-readable summary
+        total_records = len(results)
+        unique_employees = len(set(r['employee_name'] for r in results))
+        unique_dates = len(set(r['attendance_date'] for r in results))
         
+        # Status breakdown
+        status_counts = {}
         for record in results:
-            emp_id = record['employee_id']
-            emp_name = record['employee_name']
-            attendance_date = record['attendance_date']
             status = record['status']
-            dept = record['department_name']
-            
-            # Track unique employees
-            if emp_id not in unique_employees:
-                unique_employees[emp_id] = {
-                    'name': emp_name,
-                    'email': record['employee_email'],
-                    'role': record['employee_role'],
-                    'department': dept,
-                    'phone_number': record.get('phone_number', ''),
-                    'is_task_leader': record.get('is_task_leader', False),
-                    'attendance_dates': [],
-                    'status_count': {}
-                }
-            
-            # Add attendance record
-            unique_employees[emp_id]['attendance_dates'].append({
-                'date': attendance_date,
-                'status': status,
-                'notes': record.get('notes', ''),
-                'check_in_time': record.get('check_in_time'),
-                'check_out_time': record.get('check_out_time')
-            })
-            
-            # Update status count for this employee
-            if status not in unique_employees[emp_id]['status_count']:
-                unique_employees[emp_id]['status_count'][status] = 0
-            unique_employees[emp_id]['status_count'][status] += 1
-            
-            # Track date breakdown
-            date_str = attendance_date.strftime('%Y-%m-%d')
-            if date_str not in date_breakdown:
-                date_breakdown[date_str] = {'employees': set(), 'total': 0}
-            date_breakdown[date_str]['employees'].add(emp_name)
-            date_breakdown[date_str]['total'] += 1
-            
-            # Track department summary
-            if dept not in department_summary:
-                department_summary[dept] = {'employees': set(), 'total': 0}
-            department_summary[dept]['employees'].add(emp_name)
-            department_summary[dept]['total'] += 1
-            
-            # Track status summary
-            if status not in status_summary:
-                status_summary[status] = {'employees': set(), 'total': 0}
-            status_summary[status]['employees'].add(emp_name)
-            status_summary[status]['total'] += 1
+            status_counts[status] = status_counts.get(status, 0) + 1
         
-        # Convert to list format
-        for emp_id, data in unique_employees.items():
-            employee_list.append({
-                'employee_id': emp_id,
-                'name': data['name'],
-                'email': data['email'],
-                'role': data['role'],
-                'department': data['department'],
-                'phone_number': data['phone_number'],
-                'is_task_leader': data['is_task_leader'],
-                'total_attendance_days': len(data['attendance_dates']),
-                'attendance_records': data['attendance_dates'],
-                'status_breakdown': data['status_count']
-            })
-        
-        # Sort by name
-        employee_list.sort(key=lambda x: x['name'])
-        
-        # Build report
-        report_lines = [
-            f"Employee List - {status_desc} ({period_desc})",
-            "-" * 50,
-            f"Summary:",
-            f"- Total Employees Found: {len(unique_employees)} {role_desc.lower()}",
-            f"- Total Records: {len(results)} attendance entries",
-            f"- Period: {period_desc}",
-            f"- Status Filter: {status_desc}",
-            f"- Role Filter: {role_desc}"
-        ]
-        
-        # Add department breakdown if multiple departments
-        if len(department_summary) > 1:
-            report_lines.extend([
-                "",
-                "By Department:"
-            ])
-            sorted_depts = sorted(department_summary.items(), key=lambda x: len(x[1]['employees']), reverse=True)
-            for dept, data in sorted_depts:
-                report_lines.append(f"- {dept}: {len(data['employees'])} employees ({data['total']} records)")
-        
-        # Add status breakdown if showing all statuses
-        if status_filter == "all" and len(status_summary) > 1:
-            report_lines.extend([
-                "",
-                "By Status:"
-            ])
-            for status, data in sorted(status_summary.items(), key=lambda x: len(x[1]['employees']), reverse=True):
-                report_lines.append(f"- {status}: {len(data['employees'])} employees ({data['total']} records)")
-        
-        # Add employee list
-        report_lines.extend([
-            "",
-            "Employee Details:"
-        ])
-        
-        for employee in employee_list:
-            task_leader_indicator = " (Task Leader)" if employee['is_task_leader'] else ""
-            
-            report_lines.append(f"- {employee['name']}{task_leader_indicator}")
-            report_lines.append(f"  Email: {employee['email']} | Department: {employee['department']} | Role: {employee['role']}")
-            
-            if employee['phone_number']:
-                report_lines.append(f"  Phone: {employee['phone_number']}")
-            
-            # Show attendance details if multiple dates
-            if employee['total_attendance_days'] > 1:
-                report_lines.append(f"  Total attendance days: {employee['total_attendance_days']}")
-                # Show status breakdown
-                status_parts = []
-                for status, count in employee['status_breakdown'].items():
-                    if count > 0:
-                        status_parts.append(f"{status}: {count}")
-                if status_parts:
-                    report_lines.append(f"  Status breakdown: {', '.join(status_parts)}")
+        date_range_str = ""
+        if start_date and end_date:
+            if start_date == end_date:
+                date_range_str = f" for {start_date.strftime('%Y-%m-%d')}"
             else:
-                # Single day - show the specific details
-                record = employee['attendance_records'][0]
-                report_lines.append(f"  Date: {record['date']} - Status: {record['status']}")
-                if record['notes']:
-                    report_lines.append(f"  Notes: {record['notes']}")
-            
-            report_lines.append("")  # Add spacing between employees
+                date_range_str = f" from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+        
+        summary_parts = [f"Found {total_records} attendance records"]
+        if employee_name:
+            summary_parts.append(f"for employee '{employee_name}'")
+        if department:
+            summary_parts.append(f"in {department} department")
+        summary_parts.append(date_range_str)
+        
+        summary = " ".join(summary_parts) + "."
+        
+        if status_counts:
+            status_summary = ", ".join([f"{count} {status}" for status, count in status_counts.items()])
+            summary += f" Status breakdown: {status_summary}."
         
         return {
             "success": True,
-            "period": period_desc,
-            "status_filter": status_desc,
-            "role_filter": role_desc,
-            "total_employees": len(unique_employees),
-            "total_records": len(results),
-            "employee_list": employee_list,
-            "department_breakdown": {dept: len(data['employees']) for dept, data in department_summary.items()},
-            "status_breakdown": {status: len(data['employees']) for status, data in status_summary.items()},
-            "date_breakdown": {date: len(data['employees']) for date, data in date_breakdown.items()},
-            "human_readable_report": "\n".join(report_lines)
+            "message": summary,
+            "data": results,
+            "total_records": total_records,
+            "unique_employees": unique_employees,
+            "unique_dates": unique_dates,
+            "status_breakdown": status_counts,
+            "filters_applied": {
+                "employee_name": employee_name,
+                "department": department,
+                "status_filter": status_filter,
+                "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+            },
+            "query_understood": query
         }
         
     except Exception as e:
-        logger.error(f"Error in get_employees_by_attendance_status: {e}")
         return {
             "success": False,
-            "error": f"Failed to get employees by attendance status: {str(e)}"
+            "message": f"Error processing attendance query: {str(e)}",
+            "data": [],
+            "query_understood": query
         }
 
 @tool
-def generate_attendance_followup_queries(
-    context_data: Dict[str, Any]
-) -> List[str]:
+def create_attendance_record(
+    employee_identifier: str, 
+    attendance_date: str = "", 
+    status: str = "Present", 
+    check_in_time: str = "", 
+    check_out_time: str = "", 
+    notes: str = ""
+) -> Dict[str, Any]:
     """
-    Automatically generate relevant follow-up questions based on current attendance data patterns.
-    This helps create a human loop by suggesting next actions or queries the user might want to explore.
+    Creates a new attendance record for an employee.
     
     Parameters:
-    - context_data: Dictionary containing attendance analysis results from previous queries
+    - employee_identifier: Employee ID (number) or employee name
+    - attendance_date: Date in YYYY-MM-DD format (defaults to today)
+    - status: Attendance status (Present, Work from home, Planned Leave, etc.)
+    - check_in_time: Check-in time in HH:MM format (optional)
+    - check_out_time: Check-out time in HH:MM format (optional)
+    - notes: Additional notes (optional)
     
-    Returns list of contextually relevant follow-up questions.
+    Returns:
+    - success: bool
+    - message: Human-readable result
+    - data: Created record details
     """
     try:
-        queries = []
-        
-        # Extract context information
-        attendance_rate = context_data.get('attendance_rate', 0)
-        total_employees = context_data.get('total_employees', 0)
-        period = context_data.get('period', '')
-        role_filter = context_data.get('role_filter', '')
-        status_summary = context_data.get('status_summary', {})
-        concerning_performers = context_data.get('concerning_performers', [])
-        top_performers = context_data.get('top_performers', [])
-        department_breakdown = context_data.get('department_breakdown', {})
-        
-        # Base queries that are always relevant
-        base_queries = [
-            "Show me detailed attendance trends over the last 3 months",
-            "Which employees have perfect attendance this month?",
-            "Get attendance statistics by department",
-            "Show me attendance patterns by day of the week"
+        # Validate status
+        valid_statuses = [
+            "Present", "Work from home", "Planned Leave", "Sudden Leave", 
+            "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"
         ]
+        if status not in valid_statuses:
+            return {
+                "success": False,
+                "message": f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}"
+            }
         
-        # Context-specific queries based on attendance rate
-        if attendance_rate < 70:
-            queries.extend([
-                "What are the main reasons for low attendance this period?",
-                "Show me employees who need immediate attention for attendance",
-                "Generate an attendance improvement action plan",
-                "Compare this period's attendance with the previous period",
-                "Which departments have the lowest attendance rates?"
-            ])
-        elif attendance_rate < 85:
-            queries.extend([
-                "Identify patterns in leave requests and absences",
-                "Show me attendance comparison between departments",
-                "Which employees are showing declining attendance trends?",
-                "Generate targeted interventions for attendance improvement"
-            ])
+        # Find employee
+        employee = None
+        if employee_identifier.isdigit():
+            # Lookup by ID
+            employee = execute_query(
+                "SELECT id, name, email, role FROM employees WHERE id = %s AND is_active = true",
+                (int(employee_identifier),)
+            )
         else:
-            queries.extend([
-                "Recognize top performing employees for their excellent attendance",
-                "Share best practices from high-performing departments",
-                "Create attendance excellence report for management"
-            ])
+            # Lookup by name (fuzzy matching)
+            employee = execute_query(
+                "SELECT id, name, email, role FROM employees WHERE name ILIKE %s AND is_active = true",
+                (f"%{employee_identifier}%",)
+            )
         
-        # Role-specific follow-ups
-        if 'leader' in role_filter.lower():
-            queries.extend([
-                "Show task group leaders' attendance and their team impact",
-                "Compare attendance rates between task group leaders and regular leaders",
-                "Which leaders maintain consistent attendance for team guidance?"
-            ])
-        elif 'hr' in role_filter.lower():
-            queries.extend([
-                "Show HR team attendance patterns and coverage",
-                "Identify backup coverage needs for HR functions",
-                "Compare HR attendance with company averages"
-            ])
+        if not employee:
+            return {
+                "success": False,
+                "message": f"Employee '{employee_identifier}' not found or inactive."
+            }
         
-        # Status-based follow-ups
-        if status_summary:
-            wfh_count = status_summary.get('Work from home', 0)
-            leave_statuses = ['Planned Leave', 'Sudden Leave', 'Medical Leave', 'Holiday Leave', 'Lieu leave']
-            total_leaves = sum(status_summary.get(status, 0) for status in leave_statuses)
-            total_records = sum(status_summary.values())
-            
-            if wfh_count > 0 and total_records > 0:
-                wfh_percentage = (wfh_count / total_records) * 100
-                if wfh_percentage > 30:
-                    queries.append("Analyze work from home patterns and productivity correlation")
-                elif wfh_percentage > 15:
-                    queries.append("Review work from home policy effectiveness")
-            
-            if total_leaves > 0:
-                leave_percentage = (total_leaves / total_records) * 100
-                if leave_percentage > 25:
-                    queries.append("Investigate high leave utilization patterns")
-                    queries.append("Check if leave policies need adjustment")
+        if len(employee) > 1:
+            # Multiple matches found
+            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
+            return {
+                "success": False,
+                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
+            }
         
-        # Performance-based follow-ups
-        if concerning_performers:
-            queries.extend([
-                f"Create individual improvement plans for {len(concerning_performers)} underperforming employees",
-                "Schedule one-on-one meetings with employees needing attendance support",
-                "Identify root causes for attendance issues"
-            ])
+        employee_data = employee[0]
+        employee_id = employee_data['id']
+        employee_name = employee_data['name']
         
-        if top_performers:
-            queries.extend([
-                f"Prepare recognition for {len(top_performers)} top-performing employees",
-                "Document best practices from high-attendance employees",
-                "Consider top performers for attendance mentorship roles"
-            ])
+        # Parse date
+        if attendance_date:
+            try:
+                target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
+            except ValueError:
+                return {
+                    "success": False,
+                    "message": f"Invalid date format '{attendance_date}'. Use YYYY-MM-DD format."
+                }
+        else:
+            target_date = date.today()
         
-        # Department-based follow-ups
-        if len(department_breakdown) > 1:
-            queries.extend([
-                "Compare attendance rates across all departments",
-                "Identify best-performing department practices to replicate",
-                "Schedule department-specific attendance reviews"
-            ])
+        # Check if attendance already exists for this date
+        existing = execute_query(
+            "SELECT id, status FROM attendances WHERE employee_id = %s AND attendance_date = %s",
+            (employee_id, target_date)
+        )
         
-        # Time-based follow-ups
-        if period:
-            queries.extend([
-                f"Compare {period.lower()} attendance with the same period last year",
-                "Show attendance trends leading up to this period",
-                "Predict attendance patterns for the next month"
-            ])
+        if existing:
+            return {
+                "success": False,
+                "message": f"Attendance already exists for {employee_name} on {target_date.strftime('%Y-%m-%d')} with status '{existing[0]['status']}'. Use update_attendance_record to modify existing records."
+            }
         
-        # Employee count-based follow-ups
-        if total_employees > 20:
-            queries.append("Generate executive summary for large team attendance")
-        elif total_employees > 0:
-            queries.append("Create detailed individual attendance profiles")
+        # Parse times if provided
+        parsed_check_in = None
+        parsed_check_out = None
         
-        # Data quality and insights
-        queries.extend([
-            "Validate attendance data for any anomalies or missing entries",
-            "Generate attendance forecast for workforce planning",
-            "Create automated attendance alerts for proactive management"
-        ])
+        if check_in_time:
+            try:
+                parsed_check_in = datetime.strptime(f"{target_date} {check_in_time}", '%Y-%m-%d %H:%M')
+            except ValueError:
+                return {
+                    "success": False,
+                    "message": f"Invalid check-in time format '{check_in_time}'. Use HH:MM format."
+                }
         
-        # Remove duplicates and limit to most relevant
-        queries = list(dict.fromkeys(queries))  # Remove duplicates while preserving order
+        if check_out_time:
+            try:
+                parsed_check_out = datetime.strptime(f"{target_date} {check_out_time}", '%Y-%m-%d %H:%M')
+            except ValueError:
+                return {
+                    "success": False,
+                    "message": f"Invalid check-out time format '{check_out_time}'. Use HH:MM format."
+                }
         
-        # Add base queries if we don't have many context-specific ones
-        if len(queries) < 5:
-            queries.extend([q for q in base_queries if q not in queries])
+        # Create new attendance record
+        execute_query(
+            """
+            INSERT INTO attendances (employee_id, attendance_date, status, check_in_time, check_out_time, notes, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (employee_id, target_date, status, parsed_check_in, parsed_check_out, notes, datetime.now()),
+            fetch=False
+        )
         
-        # Limit to top 8-10 most relevant queries
-        return queries[:10]
+        # Retrieve the created record
+        created_record = execute_query(
+            """
+            SELECT a.*, e.name as employee_name, d.name as department_name
+            FROM attendances a
+            JOIN employees e ON a.employee_id = e.id
+            JOIN departments d ON e.department_id = d.id
+            WHERE a.employee_id = %s AND a.attendance_date = %s
+            """,
+            (employee_id, target_date)
+        )[0]
+        
+        message = f"Attendance record created successfully for {employee_name} on {target_date.strftime('%Y-%m-%d')} with status '{status}'"
+        
+        if parsed_check_in:
+            message += f", check-in: {check_in_time}"
+        if parsed_check_out:
+            message += f", check-out: {check_out_time}"
+        if notes:
+            message += f", notes: {notes}"
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": created_record,
+            "employee_name": employee_name,
+            "employee_id": employee_id,
+            "attendance_date": target_date.strftime('%Y-%m-%d'),
+            "status": status
+        }
         
     except Exception as e:
-        logger.error(f"Error generating follow-up queries: {e}")
-        # Return some basic queries as fallback
-        return [
-            "Show detailed attendance report for this month",
-            "Get attendance statistics by role and department", 
-            "Identify employees needing attendance improvement",
-            "Compare current attendance with previous periods",
-            "Generate attendance trends analysis"
-        ]
+        return {
+            "success": False,
+            "message": f"Error creating attendance record: {str(e)}"
+        }
+
+@tool
+def update_attendance_record(
+    employee_identifier: str,
+    attendance_date: str,
+    status: str = None,
+    check_in_time: str = None,
+    check_out_time: str = None,
+    notes: str = None,
+    update_reason: str = ""
+) -> Dict[str, Any]:
+    """
+    Updates an existing attendance record for an employee.
+    
+    Parameters:
+    - employee_identifier: Employee ID (number) or employee name
+    - attendance_date: Date in YYYY-MM-DD format of the record to update
+    - status: New attendance status (optional)
+    - check_in_time: New check-in time in HH:MM format (optional)
+    - check_out_time: New check-out time in HH:MM format (optional)
+    - notes: New notes (optional)
+    - update_reason: Reason for the update (for audit trail)
+    
+    Returns:
+    - success: bool
+    - message: Human-readable result
+    - data: Updated record details
+    - changes_made: List of fields that were changed
+    """
+    try:
+        # Find employee
+        employee = None
+        if employee_identifier.isdigit():
+            employee = execute_query(
+                "SELECT id, name, email FROM employees WHERE id = %s AND is_active = true",
+                (int(employee_identifier),)
+            )
+        else:
+            employee = execute_query(
+                "SELECT id, name, email FROM employees WHERE name ILIKE %s AND is_active = true",
+                (f"%{employee_identifier}%",)
+            )
+        
+        if not employee:
+            return {
+                "success": False,
+                "message": f"Employee '{employee_identifier}' not found or inactive."
+            }
+        
+        if len(employee) > 1:
+            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
+            return {
+                "success": False,
+                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
+            }
+        
+        employee_data = employee[0]
+        employee_id = employee_data['id']
+        employee_name = employee_data['name']
+        
+        # Parse date
+        try:
+            target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
+        except ValueError:
+            return {
+                "success": False,
+                "message": f"Invalid date format '{attendance_date}'. Use YYYY-MM-DD format."
+            }
+        
+        # Find existing record
+        existing_record = execute_query(
+            """
+            SELECT a.*, e.name as employee_name, d.name as department_name
+            FROM attendances a
+            JOIN employees e ON a.employee_id = e.id
+            JOIN departments d ON e.department_id = d.id
+            WHERE a.employee_id = %s AND a.attendance_date = %s
+            """,
+            (employee_id, target_date)
+        )
+        
+        if not existing_record:
+            return {
+                "success": False,
+                "message": f"No attendance record found for {employee_name} on {target_date.strftime('%Y-%m-%d')}. Use create_attendance_record to create a new record."
+            }
+        
+        existing = existing_record[0]
+        changes_made = []
+        update_fields = []
+        update_values = []
+        
+        # Prepare updates
+        if status and status != existing['status']:
+            # Validate status
+            valid_statuses = [
+                "Present", "Work from home", "Planned Leave", "Sudden Leave", 
+                "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"
+            ]
+            if status not in valid_statuses:
+                return {
+                    "success": False,
+                    "message": f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}"
+                }
+            update_fields.append("status = %s")
+            update_values.append(status)
+            changes_made.append(f"status: '{existing['status']}' → '{status}'")
+        
+        # Handle check-in time
+        if check_in_time is not None:
+            if check_in_time == "":
+                # Clear check-in time
+                update_fields.append("check_in_time = %s")
+                update_values.append(None)
+                changes_made.append("check_in_time: cleared")
+            else:
+                try:
+                    parsed_check_in = datetime.strptime(f"{target_date} {check_in_time}", '%Y-%m-%d %H:%M')
+                    current_check_in = existing['check_in_time']
+                    if parsed_check_in != current_check_in:
+                        update_fields.append("check_in_time = %s")
+                        update_values.append(parsed_check_in)
+                        old_time = current_check_in.strftime('%H:%M') if current_check_in else "None"
+                        changes_made.append(f"check_in_time: '{old_time}' → '{check_in_time}'")
+                except ValueError:
+                    return {
+                        "success": False,
+                        "message": f"Invalid check-in time format '{check_in_time}'. Use HH:MM format."
+                    }
+        
+        # Handle check-out time
+        if check_out_time is not None:
+            if check_out_time == "":
+                # Clear check-out time
+                update_fields.append("check_out_time = %s")
+                update_values.append(None)
+                changes_made.append("check_out_time: cleared")
+            else:
+                try:
+                    parsed_check_out = datetime.strptime(f"{target_date} {check_out_time}", '%Y-%m-%d %H:%M')
+                    current_check_out = existing['check_out_time']
+                    if parsed_check_out != current_check_out:
+                        update_fields.append("check_out_time = %s")
+                        update_values.append(parsed_check_out)
+                        old_time = current_check_out.strftime('%H:%M') if current_check_out else "None"
+                        changes_made.append(f"check_out_time: '{old_time}' → '{check_out_time}'")
+                except ValueError:
+                    return {
+                        "success": False,
+                        "message": f"Invalid check-out time format '{check_out_time}'. Use HH:MM format."
+                    }
+        
+        # Handle notes
+        if notes is not None and notes != existing.get('notes', ''):
+            update_fields.append("notes = %s")
+            update_values.append(notes)
+            old_notes = existing.get('notes', '') or "None"
+            new_notes = notes or "None"
+            changes_made.append(f"notes: '{old_notes}' → '{new_notes}'")
+        
+        if not update_fields:
+            return {
+                "success": True,
+                "message": f"No changes detected for {employee_name}'s attendance on {target_date.strftime('%Y-%m-%d')}",
+                "data": existing,
+                "changes_made": []
+            }
+        
+        # Add updated_at timestamp
+        update_fields.append("updated_at = %s")
+        update_values.append(datetime.now())
+        
+        # Build update query
+        update_query = f"""
+        UPDATE attendances 
+        SET {', '.join(update_fields)}
+        WHERE employee_id = %s AND attendance_date = %s
+        """
+        
+        update_values.extend([employee_id, target_date])
+        
+        # Execute update
+        execute_query(update_query, tuple(update_values), fetch=False)
+        
+        # Retrieve updated record
+        updated_record = execute_query(
+            """
+            SELECT a.*, e.name as employee_name, d.name as department_name
+            FROM attendances a
+            JOIN employees e ON a.employee_id = e.id
+            JOIN departments d ON e.department_id = d.id
+            WHERE a.employee_id = %s AND a.attendance_date = %s
+            """,
+            (employee_id, target_date)
+        )[0]
+        
+        changes_summary = ", ".join(changes_made)
+        message = f"Attendance record updated successfully for {employee_name} on {target_date.strftime('%Y-%m-%d')}. Changes: {changes_summary}"
+        
+        if update_reason:
+            message += f". Reason: {update_reason}"
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": updated_record,
+            "changes_made": changes_made,
+            "update_reason": update_reason,
+            "employee_name": employee_name,
+            "employee_id": employee_id,
+            "attendance_date": target_date.strftime('%Y-%m-%d')
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error updating attendance record: {str(e)}"
+        }
+
+# ==============================================================================
+# AGENTIC ATTENDANCE SUMMARIZATION HELPERS
+# ==============================================================================
+
+def _aggregate_by_department(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Aggregate attendance records by department with smart metrics"""
+    dept_data = {}
+    
+    for record in records:
+        dept_name = record.get('department_name', 'Unknown Department')
+        if dept_name not in dept_data:
+            dept_data[dept_name] = {
+                'total_records': 0,
+                'present_count': 0,
+                'remote_count': 0,
+                'leave_count': 0,
+                'employees': set(),
+                'status_breakdown': {},
+                'dates_covered': set()
+            }
+        
+        dept = dept_data[dept_name]
+        dept['total_records'] += 1
+        dept['employees'].add(record['employee_name'])
+        dept['dates_covered'].add(str(record['attendance_date']))
+        
+        status = record['status'].lower()
+        if status not in dept['status_breakdown']:
+            dept['status_breakdown'][status] = 0
+        dept['status_breakdown'][status] += 1
+        
+        # Categorize attendance types
+        if 'present' in status:
+            dept['present_count'] += 1
+        elif 'home' in status or 'remote' in status:
+            dept['remote_count'] += 1
+        else:
+            dept['leave_count'] += 1
+    
+    # Convert sets to counts for easier processing
+    for dept_name, data in dept_data.items():
+        data['unique_employees'] = len(data['employees'])
+        data['unique_dates'] = len(data['dates_covered'])
+        data['employees'] = list(data['employees'])  # Keep employee names
+        del data['dates_covered']  # Remove to save memory
+        
+        # Calculate attendance rate
+        total_working = data['present_count'] + data['remote_count']
+        data['attendance_rate'] = (total_working / data['total_records'] * 100) if data['total_records'] > 0 else 0
+    
+    return dept_data
+
+def _calculate_attendance_metrics(dept_data: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Calculate overall attendance metrics and identify patterns"""
+    total_records = sum(dept['total_records'] for dept in dept_data.values())
+    total_employees = len(set(emp for dept in dept_data.values() for emp in dept['employees']))
+    
+    if total_records == 0:
+        return {
+            'total_records': 0,
+            'total_employees': 0,
+            'overall_attendance_rate': 0,
+            'department_count': 0,
+            'insights': []
+        }
+    
+    # Overall attendance rate
+    total_present = sum(dept['present_count'] for dept in dept_data.values())
+    total_remote = sum(dept['remote_count'] for dept in dept_data.values())
+    overall_rate = ((total_present + total_remote) / total_records) * 100
+    
+    # Department performance analysis
+    dept_performance = []
+    for dept_name, data in dept_data.items():
+        dept_performance.append({
+            'name': dept_name,
+            'attendance_rate': data['attendance_rate'],
+            'employees': data['unique_employees'],
+            'records': data['total_records']
+        })
+    
+    # Sort by attendance rate
+    dept_performance.sort(key=lambda x: x['attendance_rate'], reverse=True)
+    
+    return {
+        'total_records': total_records,
+        'total_employees': total_employees,
+        'overall_attendance_rate': overall_rate,
+        'department_count': len(dept_data),
+        'department_performance': dept_performance,
+        'top_performing_dept': dept_performance[0] if dept_performance else None,
+        'needs_attention_dept': dept_performance[-1] if dept_performance and dept_performance[-1]['attendance_rate'] < 85 else None
+    }
+
+def _generate_department_insights(dept_data: Dict[str, Dict[str, Any]], metrics: Dict[str, Any]) -> List[str]:
+    """Generate actionable insights from department attendance data"""
+    insights = []
+    
+    # Overall performance insight
+    overall_rate = metrics['overall_attendance_rate']
+    if overall_rate >= 95:
+        insights.append(f"🟢 Excellent overall attendance rate of {overall_rate:.1f}% - team is highly engaged!")
+    elif overall_rate >= 85:
+        insights.append(f"🟡 Good attendance rate of {overall_rate:.1f}% with room for improvement")
+    else:
+        insights.append(f"🔴 Attendance rate of {overall_rate:.1f}% needs immediate attention")
+    
+    # Department-specific insights
+    if metrics['department_count'] > 1:
+        top_dept = metrics['top_performing_dept']
+        if top_dept and top_dept['attendance_rate'] >= 90:
+            insights.append(f"🌟 {top_dept['name']} leads with {top_dept['attendance_rate']:.1f}% attendance - great team culture!")
+        
+        needs_attention = metrics['needs_attention_dept']
+        if needs_attention:
+            insights.append(f"⚠️ {needs_attention['name']} needs support with {needs_attention['attendance_rate']:.1f}% attendance")
+    
+    # Remote work patterns
+    total_remote = sum(dept['remote_count'] for dept in dept_data.values())
+    remote_rate = (total_remote / metrics['total_records']) * 100 if metrics['total_records'] > 0 else 0
+    if remote_rate > 20:
+        insights.append(f"🏠 {remote_rate:.1f}% remote work indicates flexible work culture")
+    
+    # Leave patterns
+    total_leave = sum(dept['leave_count'] for dept in dept_data.values())
+    leave_rate = (total_leave / metrics['total_records']) * 100 if metrics['total_records'] > 0 else 0
+    if leave_rate > 15:
+        insights.append(f"📋 {leave_rate:.1f}% leave rate - monitor for patterns or staffing needs")
+    
+    return insights
+
+def _create_follow_up_questions(dept_data: Dict[str, Dict[str, Any]], metrics: Dict[str, Any]) -> List[str]:
+    """Generate relevant follow-up questions for progressive disclosure"""
+    questions = []
+    
+    if metrics['department_count'] > 1:
+        questions.append("📊 Would you like detailed breakdown for a specific department?")
+        
+        # Suggest departments that need attention
+        needs_attention = metrics.get('needs_attention_dept')
+        if needs_attention:
+            questions.append(f"🔍 Should I analyze {needs_attention['name']} department's attendance patterns?")
+        
+        # Suggest top performing department
+        top_dept = metrics.get('top_performing_dept')
+        if top_dept and top_dept['attendance_rate'] >= 90:
+            questions.append(f"✨ Want to see what makes {top_dept['name']} department successful?")
+    
+    # Suggest individual employee analysis
+    total_employees = metrics['total_employees']
+    if total_employees > 10:
+        questions.append("👤 Need individual employee attendance details for any team members?")
+    
+    # Suggest trend analysis
+    questions.append("📈 Would you like to compare this with previous periods?")
+    
+    # Pattern analysis
+    questions.append("🔍 Should I identify employees with perfect attendance or concerning patterns?")
+    
+    return questions[:3]  # Limit to top 3 most relevant questions
+
+@tool
+def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
+    """
+    Intelligent attendance summarization tool for large datasets with agentic insights.
+    
+    Perfect for queries like:
+    - "Show last month attendance summary"
+    - "Department-wise attendance overview" 
+    - "Attendance patterns this quarter"
+    - "How is team attendance performing?"
+    
+    Provides smart summaries, insights, and progressive disclosure instead of overwhelming raw data.
+    
+    Parameters:
+    - query: Natural language query about attendance patterns or summaries
+    
+    Returns:
+    - success: bool
+    - message: Executive summary with key insights
+    - department_breakdown: High-level department metrics
+    - insights: Agentic business intelligence
+    - follow_up_questions: Suggested next steps
+    - data_scope: Information about the data analyzed
+    """
+    try:
+        # Use existing query tool to get raw data
+        raw_result = query_attendance_intelligent(query)
+        
+        if not raw_result.get('success') or not raw_result.get('data'):
+            return {
+                "success": True,
+                "message": "No attendance data found matching your query. This could be a weekend, holiday, or the date range has no records.",
+                "insights": ["Consider checking a different date range or ensuring attendance has been marked."],
+                "follow_up_questions": ["Would you like me to check recent attendance activity?"],
+                "data_scope": {"total_records": 0, "date_range": "No data"}
+            }
+        
+        raw_data = raw_result['data']
+        total_records = len(raw_data)
+        
+        # Context-aware processing
+        if total_records > 50:  # Smart threshold for summarization
+            # Aggregate data by department
+            dept_data = _aggregate_by_department(raw_data)
+            metrics = _calculate_attendance_metrics(dept_data)
+            insights = _generate_department_insights(dept_data, metrics)
+            follow_ups = _create_follow_up_questions(dept_data, metrics)
+            
+            # Create executive summary
+            date_info = raw_result.get('filters_applied', {})
+            date_range = f"{date_info.get('start_date', 'N/A')} to {date_info.get('end_date', 'N/A')}"
+            
+            summary = f"""
+📊 **Attendance Intelligence Summary**
+
+**Data Scope**: {total_records} records across {metrics['department_count']} departments ({metrics['total_employees']} employees)
+**Period**: {date_range}
+**Overall Performance**: {metrics['overall_attendance_rate']:.1f}% attendance rate
+
+**Department Highlights**:
+"""
+            
+            # Add top 3 department performances
+            for i, dept in enumerate(metrics['department_performance'][:3]):
+                status_icon = "🟢" if dept['attendance_rate'] >= 90 else "🟡" if dept['attendance_rate'] >= 80 else "🔴"
+                summary += f"  {status_icon} {dept['name']}: {dept['attendance_rate']:.1f}% ({dept['employees']} employees)\n"
+            
+            if len(metrics['department_performance']) > 3:
+                summary += f"  ... and {len(metrics['department_performance']) - 3} more departments\n"
+            
+            return {
+                "success": True,
+                "message": summary.strip(),
+                "department_breakdown": {dept_name: {
+                    'attendance_rate': f"{data['attendance_rate']:.1f}%",
+                    'employees': data['unique_employees'],
+                    'total_records': data['total_records'],
+                    'working_count': data['present_count'] + data['remote_count'],
+                    'leave_count': data['leave_count']
+                } for dept_name, data in dept_data.items()},
+                "insights": insights,
+                "follow_up_questions": follow_ups,
+                "data_scope": {
+                    "total_records": total_records,
+                    "date_range": date_range,
+                    "departments": metrics['department_count'],
+                    "employees": metrics['total_employees'],
+                    "processing_mode": "smart_summary"
+                },
+                "metrics": metrics
+            }
+        
+        else:
+            # For smaller datasets, provide enhanced but detailed response
+            insights = [f"📋 Found {total_records} attendance records - small dataset, showing enhanced details"]
+            
+            return {
+                "success": True,
+                "message": f"Enhanced attendance details for {total_records} records:\n\n" + raw_result['message'],
+                "detailed_data": raw_data[:20],  # Show up to 20 records
+                "insights": insights,
+                "follow_up_questions": [
+                    "Need more detailed analysis of specific employees?",
+                    "Would you like to see patterns or trends in this data?"
+                ],
+                "data_scope": {
+                    "total_records": total_records,
+                    "date_range": f"{raw_result.get('filters_applied', {}).get('start_date', 'N/A')} to {raw_result.get('filters_applied', {}).get('end_date', 'N/A')}",
+                    "processing_mode": "enhanced_details"
+                }
+            }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error generating attendance summary: {str(e)}",
+            "insights": ["There was an issue processing your attendance query. Please try rephrasing your request."],
+            "follow_up_questions": ["Would you like to try a more specific date range or department query?"]
+        }
 
 # ==============================================================================
 # LANGCHAIN GRAPH SETUP
 # ==============================================================================
 
 tools = [
-    mark_attendance, update_attendance_history, get_employee_attendance_summary,
-    get_attendance_insights, get_attendance_report, validate_attendance_data,
-    get_all_employees_overview, get_tasks_report, get_current_datetime, 
-    get_attendance_statistics, get_comprehensive_trend_analysis, 
-    escalate_to_human, intelligent_decision_check, ask_company_documents,
-    # New enhanced attendance tools with human loop functionality
-    get_enhanced_attendance_summary, get_role_attendance_report, 
-    get_employees_by_attendance_status, generate_attendance_followup_queries
+    # Enhanced employee query tools
+    query_employee_details_intelligent, get_department_employee_summary, get_individual_employee_profile,
+    # Employee management tools (create/update)
+    create_employee_intelligent, update_employee_intelligent, search_employee_for_management, get_form_data_for_frontend,
+    # Unified attendance tools
+    query_attendance_intelligent, create_attendance_record, update_attendance_record, summarize_attendance_intelligent,
+    # Non-attendance functions
+    get_all_employees_overview, get_tasks_report, get_current_datetime,
+    escalate_to_human, intelligent_decision_check, ask_company_documents
 ]
 
 # Initialize conversation checkpointer for memory (using MemorySaver for compatibility)
@@ -3135,6 +2867,41 @@ I'm designed to be genuinely helpful and conversational - not robotic. I underst
 
 ## What I'm Great At 🌟
 
+**👥 Complete Employee Management System:**
+- Find employees naturally - "show me AI department employees", "give me Simon details", "all leaders"
+- Department insights - "marketing team", "who works in ramstudios", "AI department employee details"
+- Role-based queries - "show me all HR staff", "leaders in AI department"
+- Individual profiles - "Simon details", "give me John's information" with complete contact info
+- Smart responses: summaries for large groups, detailed info for individuals, names first for departments
+
+**✏️ Employee Creation & Updates:**
+- Create employees naturally - "add new employee John Doe to marketing", "create Sarah as AI leader"
+- Update any information - "change Mike's role to leader", "update Alice's phone number"
+- Smart validation - validates emails, prevents duplicates, checks department existence
+- Human-loop guidance - "John not found, create new record?", shows forms when needed
+- Complete change tracking - logs all modifications with timestamps and reasons
+
+**🚨 CRITICAL: Employee Management Tool Usage**
+ALWAYS use these specific tools for employee operations:
+- For "add employee", "create employee", "new employee" → ALWAYS call create_employee_intelligent() tool first
+- For "update employee", "change employee info" → ALWAYS call update_employee_intelligent() tool first
+- For "find employee", "show employee" → ALWAYS call query_employee_details_intelligent() tool first
+- NEVER ask users manually for employee details - the tools will automatically trigger forms when needed
+
+**🔄 Human-Loop Employee Management Workflow:**
+When a user asks to update an employee that doesn't exist:
+1. First, search for the employee using update_employee_intelligent or search_employee_for_management
+2. If not found, offer to create a new record: "Employee not found. Would you like to create them?"
+3. If user confirms (says "yes", "create", "add them", etc.), immediately call create_employee_intelligent with the suggested name
+4. When calling create_employee_intelligent or update_employee_intelligent, if missing required information, the tool will automatically return a form_request response
+5. Always ensure that form requests include proper form_data with pre_filled values and available options
+
+**🎯 Form Request Guidelines:**
+- For CREATE operations: form should be mostly blank except for any extracted information from the user query
+- For UPDATE operations: form should be pre-filled with current employee data  
+- Always include departments and roles data in form_data
+- Response type should be 'form_request' for new employees or 'employee_found_update_form' for existing employees
+
 **📋 Attendance Management Made Easy:**
 - Mark attendance naturally - just tell me "I'm working from home today" or "Mark John as present"
 - Update past records with context - "Yesterday I was actually on medical leave"
@@ -3206,12 +2973,34 @@ I don't just wait for specific requests. I notice patterns, suggest analyses you
 - I adapt my responses based on your role (HR, leader, employee) and what you're trying to accomplish
 - I suggest the most logical next steps to help you take action on insights
 
-## Enhanced Attendance Capabilities 🚀
+## Enhanced Employee & Attendance Capabilities 🚀
+
+**Smart Employee Queries & Management:**
+- Natural language understanding: "AI team employees", "show me all leaders", "Simon details"
+- Department-wise filtering with role breakdowns
+- Individual employee profiles with complete contact information and recent activity
+- Human-in-the-loop responses: summaries first for large groups, detailed info for specific requests
+- Context-aware suggestions: "Need details for any specific person?", "Want to see attendance records?"
+
+**Intelligent Employee Creation:**
+- Parse natural language requests: "create John as marketing leader", "add new AI intern"
+- Smart form generation when information is missing
+- Comprehensive validation: email format, duplicate checking, department verification
+- Role validation: ensures only valid roles (hr, leader, employee) are assigned
+- Pre-fills forms with extracted information from natural language
+
+**Advanced Employee Updates:**
+- Natural language update requests: "change Sarah's phone", "move Mike to HR department"
+- Employee not found → automatic offer to create new record
+- Multiple match disambiguation with clear employee identification
+- Change tracking with before/after values and update reasons
+- Form-based updates when specific changes aren't specified in natural language
 
 **Role-Based Queries:**
 - Query attendance by specific roles: leaders, HR staff, employees
 - Special handling for task group leaders and their team responsibilities  
 - Compare performance across different employee roles
+- Cross-reference employee roles with department structures
 
 **Smart Date Filtering:**
 - Support for "today", "this week", "this month", "last month", custom date ranges
@@ -3219,10 +3008,36 @@ I don't just wait for specific requests. I notice patterns, suggest analyses you
 - Flexible date queries like "show me who was present yesterday"
 
 **Contextual Follow-ups:**
-When I analyze attendance data, I automatically suggest relevant questions like:
+When I analyze data, I automatically suggest relevant questions like:
 - "Would you like to see which employees have perfect attendance?"
 - "Should I compare this with previous months?"
+- "Need individual employee details from any department?"
 - "Want me to identify employees needing attention?"
+
+---
+
+---
+
+## 🔥 IMPORTANT TOOL USAGE RULES 🔥
+
+**EMPLOYEE MANAGEMENT TOOL PRIORITY:**
+When user mentions ANY of these keywords or variations:
+- "add employee", "create employee", "new employee", "add new employee", "need to add employee"
+- "update employee", "change employee", "modify employee", "edit employee"
+- "find employee", "show employee", "get employee details", "employee information"
+
+YOU MUST IMMEDIATELY:
+1. Call the appropriate tool FIRST (create_employee_intelligent, update_employee_intelligent, query_employee_details_intelligent)
+2. Let the tool handle form requests and responses
+3. NEVER ask for details manually - tools will automatically trigger forms when needed
+4. NEVER provide manual forms or ask step-by-step questions
+
+**Example:**
+User: "I need to add new employee"
+✅ CORRECT: Call create_employee_intelligent("I need to add new employee") immediately
+❌ WRONG: Ask "Could you please provide me with the following details..."
+
+The tools are designed to handle missing information automatically through form popups.
 
 ---
 
@@ -3233,9 +3048,6 @@ Ready to dive in? Whether you need to update attendance, analyze trends, or just
 # LANGCHAIN-POWERED UTILITY FUNCTIONS
 # ==============================================================================
 
-def mark_attendance_direct(employee_id: int, status: str = "Present", notes: str = "") -> Dict[str, Any]:
-    """Direct attendance marking using LangChain tool - for API endpoints"""
-    return mark_attendance(str(employee_id), status, notes)
 
 # ==============================================================================
 # FASTAPI ENDPOINTS
@@ -3341,70 +3153,7 @@ async def get_departments():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/attendance/mark", response_model=APIResponse)
-async def mark_employee_attendance(request: AttendanceMarkRequest):
-    """Mark attendance for an employee"""
-    try:
-        result = mark_attendance_direct(request.employee_id, request.status.value, request.notes)
-        return APIResponse(
-            success=result["success"],
-            message=result["message"],
-            data=result if result["success"] else None
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/attendance", response_model=List[dict])
-async def get_attendance_records(
-    employee_name: Optional[str] = Query(None),
-    department: Optional[str] = Query(None),
-    start_date: Optional[date] = Query(None),
-    end_date: Optional[date] = Query(None),
-    status: Optional[str] = Query(None),
-    days: int = Query(7)
-):
-    """Get attendance records with filtering"""
-    try:
-        where_conditions = []
-        params = []
-        
-        if start_date and end_date:
-            where_conditions.append("a.attendance_date >= %s AND a.attendance_date <= %s")
-            params.extend([start_date, end_date])
-        else:
-            start_date = date.today() - timedelta(days=days)
-            where_conditions.append("a.attendance_date >= %s")
-            params.append(start_date)
-        
-        if employee_name:
-            where_conditions.append("e.name ILIKE %s")
-            params.append(f"%{employee_name}%")
-        
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-        
-        if status:
-            where_conditions.append("a.status = %s")
-            params.append(status)
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-        query = f"""
-            SELECT a.id, a.attendance_date, a.status, e.id as employee_id,
-                   e.name as employee_name, d.name as department_name
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC, e.name
-        """
-        
-        records = execute_query(query, params)
-        return [dict(record) for record in records]
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/tasks", response_model=List[dict])
 async def get_tasks(
@@ -3455,67 +3204,6 @@ async def get_tasks(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/attendance/statistics")
-async def get_attendance_stats(
-    days: int = Query(7),
-    department: Optional[str] = Query(None),
-    role: Optional[str] = Query(None)
-):
-    """Get attendance statistics"""
-    try:
-        start_date = date.today() - timedelta(days=days)
-        where_conditions = ["a.attendance_date >= %s"]
-        params = [start_date]
-        
-        title_filter_info = "for All Employees"
-        
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-            title_filter_info = f"for '{department}' Department"
-        
-        if role:
-            where_conditions.append("e.role = %s")
-            params.append(role.lower())
-            title_filter_info = f"for employees with role '{role}'"
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
-        
-        query = f"""
-            SELECT a.status, COUNT(*) as count
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            GROUP BY a.status
-        """
-        
-        results = execute_query(query, params)
-        
-        if not results:
-            return {
-                "error": "No records found.",
-                "human_readable_report": f"No attendance records found {title_filter_info} in the last {days} days."
-            }
-        
-        total_records = sum(item['count'] for item in results)
-        statistics_data = [
-            {
-                "status": item['status'],
-                "count": item['count'],
-                "percentage": round((item['count']/total_records)*100, 2)
-            }
-            for item in results
-        ]
-        
-        return {
-            "title": f"Attendance Statistics {title_filter_info}",
-            "total_records": total_records,
-            "statistics": statistics_data
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_endpoint(message: ChatMessage):
@@ -3558,6 +3246,52 @@ async def chat_endpoint(message: ChatMessage):
                         response_obj = {"type": "text", "content": ai_message.content}
                         yield f"data: {json.dumps(response_obj)}\n\n"
                         final_response.append(response_obj)
+                
+                elif "call_tools" in chunk:
+                    # Process tool calls to detect form requests
+                    tool_messages = chunk["call_tools"]["messages"]
+                    for tool_msg in tool_messages:
+                        if hasattr(tool_msg, 'content'):
+                            try:
+                                # Try to parse tool response as JSON
+                                if isinstance(tool_msg.content, str):
+                                    tool_result = json.loads(tool_msg.content)
+                                else:
+                                    tool_result = tool_msg.content
+                                
+                                # Check if tool result indicates a form request
+                                response_type = tool_result.get('response_type')
+                                if response_type in ['form_request', 'employee_found_update_form', 'employee_not_found_create_offer']:
+                                    
+                                    # Map tool response to frontend form request format
+                                    if response_type == 'form_request':
+                                        form_response = {
+                                            "type": "form_request",
+                                            "action": tool_result.get('action', 'create_employee'),
+                                            "form_data": tool_result.get('form_data', {}),
+                                            "content": tool_result.get('message', 'Opening form...')
+                                        }
+                                    elif response_type == 'employee_found_update_form':
+                                        form_response = {
+                                            "type": "form_request",
+                                            "action": "update_employee",
+                                            "form_data": tool_result.get('form_data', {}),
+                                            "content": tool_result.get('message', 'Opening update form...')
+                                        }
+                                    elif response_type == 'employee_not_found_create_offer':
+                                        form_response = {
+                                            "type": "employee_not_found_create_offer",
+                                            "suggested_name": tool_result.get('suggested_name', ''),
+                                            "content": tool_result.get('message', 'Employee not found')
+                                        }
+                                    
+                                    # Stream the form request to frontend
+                                    yield f"data: {json.dumps(form_response)}\n\n"
+                                    final_response.append(form_response)
+                                    
+                            except (json.JSONDecodeError, AttributeError):
+                                # If tool content is not JSON or has no expected format, continue
+                                pass
             
             yield f"data: [DONE]\n\n"
         
@@ -3570,134 +3304,6 @@ async def chat_endpoint(message: ChatMessage):
             detail="An unexpected error occurred. Please try again later."
         )
 
-@app.get("/debug/attendance")
-async def debug_attendance(
-    days: int = Query(7),
-    department: Optional[str] = Query(None),
-    employee_name: Optional[str] = Query(None),
-    detailed: bool = Query(False)
-):
-    """Debug endpoint for attendance calculation issues"""
-    try:
-        logger.info(f"Debug attendance endpoint called with days={days}, dept={department}, employee={employee_name}")
-        
-        # Build query conditions for debugging
-        where_conditions = []
-        params = []
-        
-        # Date range logic
-        end_date = date.today()
-        start_date = end_date - timedelta(days=days)
-        where_conditions.append("a.attendance_date >= %s AND a.attendance_date <= %s")
-        params.extend([start_date, end_date])
-        
-        # Filter conditions
-        if department:
-            where_conditions.append("d.name ILIKE %s")
-            params.append(f"%{department}%")
-            
-        if employee_name:
-            where_conditions.append("e.name ILIKE %s")
-            params.append(f"%{employee_name}%")
-            
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-        
-        # Debug query - same as main attendance query
-        debug_query = f"""
-            SELECT a.attendance_date, a.status, e.name as employee_name, 
-                   d.name as department_name, e.role, e.id as employee_id,
-                   EXTRACT(dow FROM a.attendance_date) as day_of_week,
-                   EXTRACT(week FROM a.attendance_date) as week_number,
-                   to_char(a.attendance_date, 'Day') as day_name
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            {where_clause}
-            ORDER BY a.attendance_date DESC, e.name
-            LIMIT 100
-        """
-        
-        logger.info("Executing debug query...")
-        records = execute_query(debug_query, params)
-        
-        # Analyze the data
-        debug_info = {
-            "query_executed": debug_query,
-            "parameters": params,
-            "total_records": len(records) if records else 0,
-            "date_range": f"{start_date} to {end_date}",
-            "filters": {
-                "department": department,
-                "employee_name": employee_name
-            }
-        }
-        
-        if records:
-            # Status distribution analysis
-            status_counts = {}
-            dow_counts = {}
-            dow_names = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 
-                        4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
-            
-            for record in records:
-                # Status analysis
-                status = record['status']
-                status_counts[status] = status_counts.get(status, 0) + 1
-                
-                # Day of week analysis
-                if record.get('day_of_week') is not None:
-                    dow = int(record['day_of_week'])
-                    dow_name = dow_names.get(dow, f'Unknown_{dow}')
-                    if dow_name not in dow_counts:
-                        dow_counts[dow_name] = {'total': 0, 'present': 0, 'sample_dates': []}
-                    
-                    dow_counts[dow_name]['total'] += 1
-                    if record['status'] in ['Present', 'Work from home', 'Work from out of Rise']:
-                        dow_counts[dow_name]['present'] += 1
-                    
-                    # Add sample dates for debugging
-                    if len(dow_counts[dow_name]['sample_dates']) < 3:
-                        dow_counts[dow_name]['sample_dates'].append(str(record['attendance_date']))
-            
-            debug_info.update({
-                "status_distribution": status_counts,
-                "day_of_week_analysis": dow_counts,
-                "sample_records": records[:5] if detailed else records[:2],
-                "unique_employees": len(set(r['employee_name'] for r in records)),
-                "unique_departments": len(set(r['department_name'] for r in records)),
-                "date_span": {
-                    "earliest": str(min(r['attendance_date'] for r in records)),
-                    "latest": str(max(r['attendance_date'] for r in records))
-                }
-            })
-            
-            # Calculate attendance rates
-            present_count = sum(
-                count for status, count in status_counts.items()
-                if status in ['Present', 'Work from home', 'Work from out of Rise']
-            )
-            overall_rate = round((present_count / len(records)) * 100, 1) if records else 0
-            debug_info["calculated_attendance_rate"] = f"{overall_rate}% ({present_count}/{len(records)})"
-            
-        else:
-            debug_info.update({
-                "message": "No records found",
-                "possible_reasons": [
-                    "No attendance data in the specified date range",
-                    "Department/employee filters are too restrictive",
-                    "Database connection issues",
-                    "Table structure changes"
-                ]
-            })
-        
-        return debug_info
-        
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {e}", exc_info=True)
-        return {
-            "error": str(e),
-            "message": "Debug endpoint failed - check logs for details"
-        }
 
 if __name__ == "__main__":
     import uvicorn

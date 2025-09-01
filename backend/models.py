@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import date, datetime
 from enum import Enum
 
@@ -23,7 +23,6 @@ class EmployeeRole(str, Enum):
     HR = "hr"
     LEADER = "leader"
     EMPLOYEE = "employee"
-    LABOURER = "labourer"
 
 # Employee Models
 class EmployeeBase(BaseModel):
@@ -40,6 +39,8 @@ class EmployeeCreate(EmployeeBase):
 class Employee(EmployeeBase):
     id: int
     department_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -53,6 +54,8 @@ class DepartmentBase(BaseModel):
 
 class Department(DepartmentBase):
     id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -61,6 +64,9 @@ class Department(DepartmentBase):
 class AttendanceBase(BaseModel):
     attendance_date: date
     status: AttendanceStatus
+    check_in_time: Optional[datetime] = None
+    check_out_time: Optional[datetime] = None
+    notes: Optional[str] = None
 
 class AttendanceCreate(AttendanceBase):
     employee_id: int
@@ -68,6 +74,8 @@ class AttendanceCreate(AttendanceBase):
 class Attendance(AttendanceBase):
     id: int
     employee_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -141,11 +149,165 @@ class LeaveBalance(BaseModel):
     class Config:
         from_attributes = True
 
+# Labour Models
+class LabourBase(BaseModel):
+    name: str
+    skill: str
+
+class LabourCreate(LabourBase):
+    pass
+
+class Labour(LabourBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+# HR Policy Models
+class HRPolicyBase(BaseModel):
+    document_name: str
+    chunk_text: str
+
+class HRPolicyCreate(HRPolicyBase):
+    pass
+
+class HRPolicy(HRPolicyBase):
+    id: int
+    embedding: Optional[List[float]] = None
+    
+    class Config:
+        from_attributes = True
+
+# Document Models
+class DocumentBase(BaseModel):
+    content: str
+    metadata: Optional[dict] = None
+
+class DocumentCreate(DocumentBase):
+    pass
+
+class Document(DocumentBase):
+    id: int
+    embedding: Optional[List[float]] = None
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+# Junction Table Models
+class TaskGroupLeader(BaseModel):
+    task_group_id: int
+    employee_id: int
+    
+    class Config:
+        from_attributes = True
+
+class TaskLabour(BaseModel):
+    task_id: int
+    labour_id: int
+    
+    class Config:
+        from_attributes = True
+
 # API Response Models
 class APIResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
+
+# Enhanced Employee Query Response Models
+class EmployeeQueryResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Any] = None
+    response_type: str  # "individual_profile", "department_list", "all_employees_summary", "small_group", etc.
+    total_found: int
+    follow_up_questions: List[str] = []
+
+class DepartmentSummaryResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Department data with employee counts and roles
+    total_employees: int
+    total_departments: int
+    response_type: str = "department_summary"
+    follow_up_questions: List[str] = []
+
+class IndividualEmployeeResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Complete employee profile
+    response_type: str = "individual_profile"
+    search_type: Optional[str] = None  # "id", "email", "name"
+    follow_up_questions: List[str] = []
+
+class EmployeeSummaryData(BaseModel):
+    department: str
+    employees: List[dict]
+    role_groups: dict
+
+class MultipleMatchesResponse(BaseModel):
+    success: bool
+    message: str
+    data: List[dict]  # List of matching employees
+    response_type: str = "multiple_matches"
+    total_found: int
+    follow_up_questions: List[str] = []
+
+# Employee Management Response Models (Create/Update)
+class EmployeeFormRequest(BaseModel):
+    success: bool
+    message: str
+    response_type: str = "form_request"
+    action: str  # "create_employee" or "update_employee"
+    form_data: dict  # Contains pre_filled values, departments, roles, etc.
+    follow_up_questions: List[str] = []
+
+class EmployeeValidationError(BaseModel):
+    success: bool = False
+    message: str
+    response_type: str = "validation_error"
+    suggestions: List[str] = []
+    follow_up_questions: List[str] = []
+
+class EmployeeCreatedResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "success_created"
+    data: dict  # Created employee data
+    follow_up_questions: List[str] = []
+
+class EmployeeUpdatedResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "success_updated"
+    data: dict  # Updated employee data
+    changes_made: List[str] = []
+    update_reason: Optional[str] = None
+    follow_up_questions: List[str] = []
+
+class EmployeeNotFoundCreateOffer(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "employee_not_found_create_offer"
+    suggested_name: str = ""
+    follow_up_questions: List[str] = []
+
+class EmployeeUpdateFormRequest(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "employee_found_update_form"
+    action: str = "update_employee"
+    data: dict  # Current employee data
+    form_data: dict  # Form configuration with current values
+    follow_up_questions: List[str] = []
+
+class FormDataResponse(BaseModel):
+    success: bool = True
+    message: str
+    data: dict  # Contains departments, roles, validation_rules, field_labels
 
 class AttendanceReport(BaseModel):
     title: str
@@ -174,7 +336,7 @@ class TaskGroupLeaderAssignment(BaseModel):
 
 class TaskLabourerAssignment(BaseModel):
     task_id: int
-    employee_id: int
+    labour_id: int
 
 # Query Models
 class AttendanceQuery(BaseModel):
