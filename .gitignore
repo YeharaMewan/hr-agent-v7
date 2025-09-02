@@ -255,7 +255,7 @@ dist
 
 # Gatsby files
 .cache/
-public
+# public - commented out to allow frontend/public assets
 
 # Vite build output
 dist/
@@ -288,6 +288,7 @@ postgresql_backup_*
 
 # MySQL
 *.sql
+!init.sql
 mysql_backup_*
 
 # Database dumps
@@ -307,7 +308,7 @@ volumes/
 data/
 
 # Docker build context that should be ignored
-.dockerignore
+# .dockerignore files are now tracked for Docker optimization
 
 # Docker Compose override files
 docker-compose.override.yml
