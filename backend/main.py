@@ -134,7 +134,8 @@ from models import (
     Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
     Attendance, AttendanceCreate, AttendanceQuery,
     Task, TaskCreate, TaskWithDetails, TaskQuery,
-    Department, ChatMessage, APIResponse, AttendanceStatistics
+    Department, ChatMessage, APIResponse, AttendanceStatistics,
+    EmployeeCreateRequest, EmployeeUpdateRequest
 )
 
 # Logging already setup above
@@ -311,18 +312,66 @@ def query_employee_details_intelligent(query: str) -> Dict[str, Any]:
         results = execute_query(base_query, tuple(params))
         
         if not results:
-            return {
-                "success": True,
-                "message": f"No employees found matching '{query}'. Please check the spelling or try a different search.",
-                "data": [],
-                "response_type": "no_results",
-                "total_found": 0,
-                "follow_up_questions": [
-                    "Try searching for a specific department like 'AI team' or 'Marketing'",
-                    "Search by role like 'leaders' or 'HR staff'",
-                    "Check if you spelled the employee name correctly"
-                ]
-            }
+            # If this was an individual name search and no results found, check for similar names and offer to create
+            if query_type == "individual" and employee_name:
+                similar_employees = _find_similar_employees(employee_name, threshold=0.6)
+                
+                if similar_employees:
+                    # Found similar employees - ask human loop question
+                    best_match = similar_employees[0]
+                    similar_names = [f"{emp['name']} ({emp['department_name']} - {emp['role']})" for emp in similar_employees]
+                    
+                    return {
+                        "success": True,
+                        "message": f"Employee '{employee_name}' not found in our company, but similar employees exist:\n\n" + 
+                                 "\n".join([f"• {name}" for name in similar_names]) + 
+                                 f"\n\nDid you mean one of these employees, or would you like to add '{employee_name}' as a new employee?",
+                        "response_type": "human_loop_question",
+                        "conversation_state": {
+                            "pending_action": "show_employee_details",
+                            "alternative_action": "create_employee",
+                            "suggested_data": {
+                                "employee": best_match,
+                                "suggested_name": employee_name,
+                                "all_similar": similar_employees
+                            }
+                        },
+                        "follow_up_questions": [
+                            f"Show details for {best_match['name']}",
+                            f"Add '{employee_name}' as new employee"
+                        ]
+                    }
+                else:
+                    # No similar employees found - ask human loop question for creation
+                    return {
+                        "success": True,
+                        "message": f"Employee '{employee_name}' is not found in our company. Do you need to add them as a new employee?",
+                        "response_type": "human_loop_question",
+                        "conversation_state": {
+                            "pending_action": "create_employee",
+                            "suggested_data": {
+                                "suggested_name": employee_name
+                            }
+                        },
+                        "follow_up_questions": [
+                            f"Yes, add '{employee_name}' as new employee",
+                            "No, let me search for a different employee"
+                        ]
+                    }
+            else:
+                # General search with no results
+                return {
+                    "success": True,
+                    "message": f"No employees found matching '{query}'. Please check the spelling or try a different search.",
+                    "data": [],
+                    "response_type": "no_results",
+                    "total_found": 0,
+                    "follow_up_questions": [
+                        "Try searching for a specific department like 'AI team' or 'Marketing'",
+                        "Search by role like 'leaders' or 'HR staff'",
+                        "Check if you spelled the employee name correctly"
+                    ]
+                }
         
         total_found = len(results)
         
@@ -959,30 +1008,25 @@ def create_employee_intelligent(
         # If missing required fields, request form
         if missing_fields:
             departments_data = _get_available_departments()
-            return {
-                "success": True,
-                "message": f"I'll help you create a new employee record{f' for {name}' if name else ''}. Let me gather the required information.",
-                "response_type": "form_request",
-                "action": "create_employee",
-                "form_data": {
-                    "pre_filled": {
-                        "name": name,
-                        "email": email,
-                        "role": role,
-                        "department": department,
-                        "phone_number": phone_number,
-                        "address": address
-                    },
-                    "departments": departments_data,
-                    "roles": [
-                        {"value": "hr", "label": "HR Staff"},
-                        {"value": "leader", "label": "Team Leader"},
-                        {"value": "employee", "label": "Employee"}
-                    ],
-                    "required_fields": ["name", "email", "role", "department"]
+            form_data = {
+                "pre_filled": {
+                    "name": name,
+                    "email": email,
+                    "role": role,
+                    "department": department,
+                    "phone_number": phone_number,
+                    "address": address
                 },
-                "follow_up_questions": []
+                "departments": departments_data,
+                "roles": [
+                    {"value": "hr", "label": "HR Staff"},
+                    {"value": "leader", "label": "Team Leader"},
+                    {"value": "employee", "label": "Employee"}
+                ],
+                "required_fields": ["name", "email", "role", "department"]
             }
+            
+            return _create_standardized_form_response("create_employee", "", form_data)
         
         # Validate provided data
         validation_result = _validate_employee_data(name, email, role, department, "create")
@@ -1118,6 +1162,8 @@ def update_employee_intelligent(
             employee_identifier = parsed_data.get('employee_identifier', '')
             field_updates = parsed_data.get('field_updates', {})
             update_reason = parsed_data.get('update_reason', update_reason)
+            
+        # CRITICAL: Always show form for update requests - don't return early with text responses
         
         # Search for the employee
         if not employee_identifier:
@@ -1135,16 +1181,49 @@ def update_employee_intelligent(
         search_result = _search_employee_for_update(employee_identifier)
         
         if search_result["type"] == "not_found":
-            # Employee not found - offer to create
+            # Employee not found - check for similar names first
+            if not employee_identifier.isdigit() and '@' not in employee_identifier:
+                # Only do fuzzy matching for name searches, not IDs or emails
+                similar_employees = _find_similar_employees(employee_identifier, threshold=0.6)
+                
+                if similar_employees:
+                    # Found similar employees - ask human loop question
+                    best_match = similar_employees[0]
+                    
+                    return {
+                        "success": True,
+                        "message": f"User '{employee_identifier}' not found in our database, but similar name '{best_match['name']}' appears in our database. Do you need to update '{best_match['name']}' employee details?",
+                        "response_type": "human_loop_question", 
+                        "conversation_state": {
+                            "pending_action": "update_employee",
+                            "alternative_action": "create_employee",
+                            "suggested_data": {
+                                "employee": best_match,
+                                "searched_name": employee_identifier,
+                                "suggested_name": employee_identifier,
+                                "all_similar": similar_employees
+                            }
+                        },
+                        "follow_up_questions": [
+                            f"Yes, update {best_match['name']} details",
+                            f"No, create new employee '{employee_identifier}'"
+                        ]
+                    }
+            
+            # No similar employees found or searching by ID/email - ask human loop question for creation
             return {
                 "success": True,
                 "message": f"I couldn't find an employee matching '{employee_identifier}' in our database.\n\nWould you like me to create a new employee record for them?",
-                "response_type": "employee_not_found_create_offer",
-                "suggested_name": employee_identifier if not employee_identifier.isdigit() else "",
+                "response_type": "human_loop_question",
+                "conversation_state": {
+                    "pending_action": "create_employee",
+                    "suggested_data": {
+                        "suggested_name": employee_identifier if not employee_identifier.isdigit() else ""
+                    }
+                },
                 "follow_up_questions": [
                     "Yes, create a new employee record",
-                    "No, let me search for a different employee",
-                    "Show me all employees to find the right person"
+                    "No, let me search for a different employee"
                 ]
             }
         
@@ -1172,35 +1251,35 @@ def update_employee_intelligent(
             # If no specific field updates provided, show update form
             if not field_updates:
                 departments_data = _get_available_departments()
-                return {
-                    "success": True,
-                    "message": f"Found **{employee['name']}** ({employee['role']} in {employee['department_name']}). What would you like to update?",
-                    "response_type": "employee_found_update_form",
-                    "action": "update_employee",
-                    "data": employee,
-                    "form_data": {
-                        "current_values": {
-                            "name": employee['name'],
-                            "email": employee['email'],
-                            "role": employee['role'],
-                            "department": employee['department_name'],
-                            "phone_number": employee.get('phone_number', ''),
-                            "address": employee.get('address', '')
-                        },
-                        "employee_id": employee['id'],
-                        "departments": departments_data,
-                        "roles": [
-                            {"value": "hr", "label": "HR Staff"},
-                            {"value": "leader", "label": "Team Leader"},
-                            {"value": "employee", "label": "Employee"}
-                        ]
+                # Fetch complete employee data from database for pre-population
+                complete_employee = _get_complete_employee_data(employee['id'])
+                
+                form_data = {
+                    "current_values": {
+                        "name": complete_employee.get('name', ''),
+                        "email": complete_employee.get('email', ''),
+                        "role": complete_employee.get('role', ''),
+                        "department": complete_employee.get('department_name', ''),
+                        "phone_number": complete_employee.get('phone_number', ''),
+                        "address": complete_employee.get('address', '')
                     },
-                    "follow_up_questions": [
-                        "Which information would you like to update?",
-                        "Need to change their role or department?",
-                        "Want to update contact information?"
+                    "employee_id": complete_employee.get('id'),
+                    "departments": departments_data,
+                    "roles": [
+                        {"value": "hr", "label": "HR Staff"},
+                        {"value": "leader", "label": "Team Leader"},
+                        {"value": "employee", "label": "Employee"}
                     ]
                 }
+                
+                response = _create_standardized_form_response("update_employee", "", form_data, "employee_found_update_form")
+                response["data"] = complete_employee  # Use complete employee data
+                response["follow_up_questions"] = [
+                    "Which information would you like to update?",
+                    "Need to change their role or department?",
+                    "Want to update contact information?"
+                ]
+                return response
         
     except Exception as e:
         return {
@@ -1334,96 +1413,205 @@ def get_form_data_for_frontend() -> Dict[str, Any]:
 # ==============================================================================
 
 def _parse_employee_creation_query(query: str) -> Dict[str, str]:
-    """Parse natural language employee creation query"""
+    """Enhanced parsing for natural language employee creation queries"""
     import re
     
     result = {"name": "", "email": "", "role": "", "department": ""}
     query_lower = query.lower()
     
-    # Extract name patterns
+    # Enhanced name extraction patterns
     name_patterns = [
-        r'create.*employee\s+([A-Za-z\s]+?)(?:\s|$)',
-        r'add\s+([A-Za-z\s]+?)\s+to',
-        r'new\s+employee\s+([A-Za-z\s]+?)(?:\s|$)'
+        r'create.*(?:employee|user)\s+([A-Za-z\s]+?)(?:\s+(?:to|as|in|for|with)|$)',
+        r'add\s+(?:new\s+)?(?:employee|user\s+)?([A-Za-z\s]+?)\s+(?:to|as|in)',
+        r'new\s+(?:employee|user)\s+([A-Za-z\s]+?)(?:\s+(?:to|as|in|for)|$)',
+        r'(?:employee|user)\s+([A-Za-z\s]+?)(?:\s+(?:to|as|in)|$)',
+        r'add\s+([A-Za-z\s]+?)(?:\s+(?:employee|user|to|as))',
+        r'create\s+([A-Za-z\s]+?)(?:\s+(?:employee|user|as|to))',
+        # Catch standalone names after common triggers
+        r'(?:add|create|new)\s+([A-Za-z]{2,}\s+[A-Za-z]{2,}(?:\s+[A-Za-z]+)?)'
     ]
     
     for pattern in name_patterns:
         match = re.search(pattern, query, re.IGNORECASE)
         if match:
             potential_name = match.group(1).strip()
-            if len(potential_name.split()) <= 4:  # Reasonable name length
+            # Filter out common words that aren't names
+            exclude_words = ['employee', 'user', 'new', 'person', 'staff', 'member', 'details', 'information']
+            if not any(word in potential_name.lower() for word in exclude_words) and 1 <= len(potential_name.split()) <= 4:
                 result["name"] = potential_name
                 break
     
-    # Extract email if present
+    # Enhanced email extraction
     email_pattern = r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b'
     email_match = re.search(email_pattern, query)
     if email_match:
         result["email"] = email_match.group(1)
     
-    # Extract role
-    if 'leader' in query_lower or 'manager' in query_lower:
-        result["role"] = "leader"
-    elif 'hr' in query_lower:
-        result["role"] = "hr"
-    elif 'intern' in query_lower or 'employee' in query_lower:
-        result["role"] = "employee"
-    
-    # Extract department
-    dept_keywords = {
-        'ai': ['ai', 'artificial intelligence', 'rise ai'],
-        'marketing': ['marketing', 'marketing team'],
-        'hr': ['hr', 'human resources'],
-        'finance': ['finance', 'accounting'],
-        'operations': ['operations', 'ops'],
-        'tech': ['tech', 'technology']
+    # Enhanced role detection
+    role_patterns = {
+        'leader': [r'\bleader\b', r'\bmanager\b', r'\bsupervisor\b', r'\bhead\b', r'\blead\b'],
+        'hr': [r'\bhr\b', r'\bhuman\s+resources\b', r'\bhr\s+staff\b'],
+        'employee': [r'\bemployee\b', r'\bstaff\b', r'\bmember\b', r'\bworker\b']
     }
     
-    for dept_key, keywords in dept_keywords.items():
-        if any(keyword in query_lower for keyword in keywords):
-            result["department"] = dept_key
+    for role, patterns in role_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, query_lower):
+                result["role"] = role
+                break
+        if result["role"]:
+            break
+    
+    # Enhanced department detection
+    department_patterns = {
+        'AI': [r'\bai\b', r'\bartificial\s+intelligence\b', r'\bai\s+department\b'],
+        'Marketing': [r'\bmarketing\b', r'\bmarketing\s+department\b', r'\bmarketing\s+team\b'],
+        'HR': [r'\bhr\s+department\b', r'\bhuman\s+resources\b', r'\bhr\s+team\b'],
+        'IT': [r'\bit\b', r'\bit\s+department\b', r'\binformation\s+technology\b', r'\btech\b'],
+        'Construction': [r'\bconstruction\b', r'\bconstruction\s+department\b', r'\bconstruction\s+team\b'],
+        'Finance': [r'\bfinance\b', r'\bfinance\s+department\b', r'\baccounting\b']
+    }
+    
+    for dept, patterns in department_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, query_lower):
+                result["department"] = dept
+                break
+        if result["department"]:
             break
     
     return result
 
 def _parse_employee_update_query(query: str) -> Dict[str, Any]:
-    """Parse natural language employee update query"""
+    """Enhanced parsing for natural language employee update queries"""
     import re
     
     result = {"employee_identifier": "", "field_updates": {}, "update_reason": ""}
+    query_lower = query.lower()
     
-    # Extract employee identifier
+    # Enhanced employee identifier extraction with more patterns
     identifier_patterns = [
-        r'update\s+([A-Za-z\s]+?)(?:\s|\'s)',
-        r'change\s+([A-Za-z\s]+?)(?:\s|\'s)',
-        r'modify\s+([A-Za-z\s]+?)(?:\s|\'s)'
+        r'update\s+([A-Za-z\s]+?)(?:\s+(?:details|info|information)|\'s|$)',
+        r'change\s+([A-Za-z\s]+?)(?:\s+(?:details|info|information)|\'s|$)', 
+        r'modify\s+([A-Za-z\s]+?)(?:\s+(?:details|info|information)|\'s|$)',
+        r'edit\s+([A-Za-z\s]+?)(?:\s+(?:details|info|information)|\'s|$)',
+        # Handle "update John Smith" or "edit John Smith details"
+        r'(?:update|change|modify|edit)\s+([A-Za-z]{2,}\s+[A-Za-z]{2,}(?:\s+[A-Za-z]+)?)',
+        # Handle "[NAME] details" patterns  
+        r'([A-Za-z]{2,}\s+[A-Za-z]{2,}(?:\s+[A-Za-z]+)?)\s*(?:details|info|information)',
+        # Handle "employee/user [NAME]" patterns
+        r'(?:user|employee|staff)\s+([A-Za-z]{2,}\s+[A-Za-z]{2,}(?:\s+[A-Za-z]+)?)',
+        # Handle contextual patterns like "for John Smith"
+        r'(?:for|of)\s+([A-Za-z]{2,}\s+[A-Za-z]{2,}(?:\s+[A-Za-z]+)?)',
+        # Fallback: any sequence that looks like a full name
+        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b'
     ]
     
     for pattern in identifier_patterns:
         match = re.search(pattern, query, re.IGNORECASE)
         if match:
-            result["employee_identifier"] = match.group(1).strip()
-            break
+            potential_name = match.group(1).strip()
+            # Filter out common words that aren't names
+            exclude_words = ['employee', 'user', 'staff', 'details', 'info', 'information', 'data', 'record']
+            if not any(word in potential_name.lower() for word in exclude_words) and 1 <= len(potential_name.split()) <= 4:
+                result["employee_identifier"] = potential_name
+                break
     
-    # Extract field updates
-    if 'phone' in query.lower():
-        phone_match = re.search(r'phone.*?(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})', query)
-        if phone_match:
-            result["field_updates"]["phone_number"] = phone_match.group(1)
+    # Enhanced field updates extraction
+    if 'phone' in query_lower:
+        phone_patterns = [
+            r'phone.*?(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})',
+            r'phone\s+number.*?(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})',
+            r'(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})'
+        ]
+        for pattern in phone_patterns:
+            phone_match = re.search(pattern, query)
+            if phone_match:
+                result["field_updates"]["phone_number"] = phone_match.group(1)
+                break
     
-    if 'email' in query.lower():
+    if 'email' in query_lower:
         email_match = re.search(r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b', query)
         if email_match:
             result["field_updates"]["email"] = email_match.group(1)
     
-    if 'role to leader' in query.lower() or 'role to manager' in query.lower():
+    # Enhanced role detection
+    if any(phrase in query_lower for phrase in ['role to leader', 'role to manager', 'make leader', 'promote to leader']):
         result["field_updates"]["role"] = "leader"
-    elif 'role to hr' in query.lower():
+    elif any(phrase in query_lower for phrase in ['role to hr', 'move to hr', 'hr role']):
         result["field_updates"]["role"] = "hr"
-    elif 'role to employee' in query.lower():
+    elif any(phrase in query_lower for phrase in ['role to employee', 'regular employee', 'staff member']):
         result["field_updates"]["role"] = "employee"
     
+    # Enhanced department detection
+    department_patterns = {
+        'AI': [r'\bai\b', r'\bartificial\s+intelligence\b', r'\bai\s+department\b'],
+        'Marketing': [r'\bmarketing\b', r'\bmarketing\s+department\b'],
+        'HR': [r'\bhr\s+department\b', r'\bhuman\s+resources\b'],
+        'IT': [r'\bit\b', r'\bit\s+department\b', r'\btech\b'],
+        'Construction': [r'\bconstruction\b', r'\bconstruction\s+department\b'],
+        'Finance': [r'\bfinance\b', r'\bfinance\s+department\b']
+    }
+    
+    for dept, patterns in department_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, query_lower):
+                result["field_updates"]["department"] = dept
+                break
+        if result["field_updates"].get("department"):
+            break
+    
+    # Extract reason for update
+    if 'because' in query_lower:
+        reason_match = re.search(r'because\s+(.+)', query_lower)
+        if reason_match:
+            result["update_reason"] = reason_match.group(1).strip()
+    
     return result
+
+def _get_complete_employee_data(employee_id: int) -> Dict[str, Any]:
+    """Fetch complete employee data from database for form pre-population"""
+    try:
+        query = """
+            SELECT e.id, e.name, e.email, e.role, e.phone_number, e.address, 
+                   e.is_active, d.name as department_name, d.id as department_id
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE e.id = %s
+        """
+        
+        employees = execute_query(query, [employee_id])
+        
+        if employees:
+            employee = dict(employees[0])
+            return {
+                "id": employee['id'],
+                "name": employee['name'],
+                "email": employee['email'],
+                "role": employee['role'],
+                "phone_number": employee.get('phone_number', ''),
+                "address": employee.get('address', ''),
+                "department_name": employee['department_name'],
+                "department_id": employee['department_id'],
+                "is_active": employee.get('is_active', True)
+            }
+        else:
+            return {}
+            
+    except Exception as e:
+        print(f"Error fetching complete employee data: {e}")
+        return {}
+
+def _create_standardized_form_response(action: str, message: str, form_data: Dict[str, Any], response_type: str = "form_request") -> Dict[str, Any]:
+    """Create a standardized form response format for consistent frontend handling - FORM ONLY, NO TEXT MESSAGES"""
+    return {
+        "success": True,
+        "message": "",  # Empty message to prevent text display - only form popup
+        "response_type": response_type,
+        "action": action,
+        "form_data": form_data,
+        "follow_up_questions": []
+    }
 
 def _search_employee_for_update(identifier: str) -> Dict[str, Any]:
     """Search for employee by various identifiers for update operations"""
@@ -1476,6 +1664,355 @@ def _search_employee_for_update(identifier: str) -> Dict[str, Any]:
             
     except Exception as e:
         return {"type": "error", "message": str(e)}
+
+def _calculate_string_similarity(str1: str, str2: str) -> float:
+    """
+    Calculate similarity between two strings using Levenshtein distance
+    Returns a similarity score between 0 and 1 (1 being identical)
+    """
+    def levenshtein_distance(s1: str, s2: str) -> int:
+        """Calculate the Levenshtein distance between two strings"""
+        if len(s1) < len(s2):
+            return levenshtein_distance(s2, s1)
+        
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = list(range(len(s2) + 1))
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+    
+    # Normalize strings for comparison
+    s1_norm = str1.lower().strip()
+    s2_norm = str2.lower().strip()
+    
+    # Handle exact matches
+    if s1_norm == s2_norm:
+        return 1.0
+    
+    # Calculate Levenshtein distance
+    distance = levenshtein_distance(s1_norm, s2_norm)
+    max_length = max(len(s1_norm), len(s2_norm))
+    
+    # Convert distance to similarity score (0-1)
+    if max_length == 0:
+        return 1.0
+    
+    similarity = 1 - (distance / max_length)
+    return similarity
+
+def _find_similar_employees(search_name: str, threshold: float = 0.6) -> List[Dict[str, Any]]:
+    """
+    Find employees with similar names to the search term
+    Returns employees with similarity score above threshold, sorted by similarity
+    """
+    try:
+        # Get all active employees
+        all_employees = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE e.is_active = true
+            ORDER BY e.name
+            """
+        )
+        
+        similar_employees = []
+        
+        for employee in all_employees:
+            similarity = _calculate_string_similarity(search_name, employee['name'])
+            if similarity >= threshold:
+                employee_with_similarity = dict(employee)
+                employee_with_similarity['similarity_score'] = similarity
+                similar_employees.append(employee_with_similarity)
+        
+        # Sort by similarity score (highest first)
+        similar_employees.sort(key=lambda x: x['similarity_score'], reverse=True)
+        
+        return similar_employees[:3]  # Return top 3 matches
+        
+    except Exception as e:
+        logger.error(f"Error finding similar employees: {str(e)}")
+        return []
+
+def _detect_confirmation_intent(message: str) -> bool:
+    """
+    Detect if user message is confirming a previous human loop question
+    Returns True if message indicates confirmation/agreement
+    """
+    message_lower = message.lower().strip()
+    
+    # Confirmation phrases
+    confirmation_phrases = [
+        "yes", "y", "yeah", "yep", "sure", "ok", "okay", "confirm", "proceed",
+        "add them", "create them", "add him", "add her", "create him", "create her",
+        "update them", "update him", "update her", "change them", "modify them",
+        "go ahead", "do it", "please do", "continue", "correct", "right"
+    ]
+    
+    # Positive confirmation patterns
+    confirmation_patterns = [
+        r"^yes\b", r"^y\b", r"^sure\b", r"^ok\b", r"^okay\b",
+        r"\badd\s+(?:them|him|her|it)\b", r"\bcreate\s+(?:them|him|her|it)\b",
+        r"\bupdate\s+(?:them|him|her|it)\b", r"\byes\s*,?\s*(?:add|create|update)\b",
+        r"\bplease\s+(?:add|create|update)\b"
+    ]
+    
+    # Check exact phrases
+    for phrase in confirmation_phrases:
+        if phrase == message_lower or message_lower.startswith(phrase + " "):
+            return True
+    
+    # Check patterns
+    import re
+    for pattern in confirmation_patterns:
+        if re.search(pattern, message_lower):
+            return True
+    
+    return False
+
+def _detect_rejection_intent(message: str) -> bool:
+    """
+    Detect if user message is rejecting a previous human loop question
+    Returns True if message indicates rejection/disagreement
+    """
+    message_lower = message.lower().strip()
+    
+    # Rejection phrases
+    rejection_phrases = [
+        "no", "n", "nope", "nah", "cancel", "abort", "stop", "nevermind", "never mind",
+        "not now", "later", "skip", "ignore", "different", "other", "another"
+    ]
+    
+    # Check exact phrases
+    for phrase in rejection_phrases:
+        if phrase == message_lower or message_lower.startswith(phrase + " "):
+            return True
+    
+    return False
+
+def _build_create_form_response(conversation_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build a form_request response for creating a new employee
+    Returns form data with departments, roles, and pre-filled suggested name
+    """
+    try:
+        suggested_data = conversation_state.get('suggested_data', {})
+        suggested_name = suggested_data.get('suggested_name', '')
+        
+        # Get available departments and roles
+        departments_data = _get_available_departments()
+        
+        form_data = {
+            "pre_filled": {
+                "name": suggested_name,
+                "email": "",
+                "role": "",
+                "department": "",
+                "phone_number": "",
+                "address": ""
+            },
+            "departments": departments_data,
+            "roles": [
+                {"value": "hr", "label": "HR Staff"},
+                {"value": "leader", "label": "Team Leader"},
+                {"value": "employee", "label": "Employee"}
+            ],
+            "required_fields": ["name", "email", "role", "department"]
+        }
+        
+        return {
+            "success": True,
+            "message": "",  # Empty message to prevent text display - only show form popup
+            "response_type": "form_request",
+            "action": "create_employee",
+            "form_data": form_data,
+            "follow_up_questions": []
+        }
+        
+    except Exception as e:
+        logger.error(f"Error building create form response: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Error preparing employee creation form: {str(e)}",
+            "response_type": "error"
+        }
+
+def _build_update_form_response(conversation_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build an employee_found_update_form response for updating an existing employee
+    Returns form data with current employee data pre-filled
+    """
+    try:
+        suggested_data = conversation_state.get('suggested_data', {})
+        employee_data = suggested_data.get('employee', {})
+        
+        if not employee_data:
+            return {
+                "success": False,
+                "message": "No employee data found for update",
+                "response_type": "error"
+            }
+        
+        # Get complete employee data
+        complete_employee = _get_complete_employee_data(employee_data.get('id'))
+        
+        # Get available departments and roles
+        departments_data = _get_available_departments()
+        
+        form_data = {
+            "current_values": {
+                "name": complete_employee.get('name', ''),
+                "email": complete_employee.get('email', ''),
+                "role": complete_employee.get('role', ''),
+                "department": complete_employee.get('department_name', ''),
+                "phone_number": complete_employee.get('phone_number', ''),
+                "address": complete_employee.get('address', '')
+            },
+            "employee_id": complete_employee.get('id'),
+            "departments": departments_data,
+            "roles": [
+                {"value": "hr", "label": "HR Staff"},
+                {"value": "leader", "label": "Team Leader"},
+                {"value": "employee", "label": "Employee"}
+            ],
+            "required_fields": ["name", "email", "role", "department"]
+        }
+        
+        return {
+            "success": True,
+            "message": "",  # Empty message to prevent text display - only show form popup
+            "response_type": "employee_found_update_form",
+            "action": "update_employee", 
+            "form_data": form_data,
+            "follow_up_questions": []
+        }
+        
+    except Exception as e:
+        logger.error(f"Error building update form response: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Error preparing employee update form: {str(e)}",
+            "response_type": "error"
+        }
+
+def _build_employee_details_response(conversation_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build a response to show employee details (no form)
+    """
+    try:
+        suggested_data = conversation_state.get('suggested_data', {})
+        employee_data = suggested_data.get('employee', {})
+        
+        if not employee_data:
+            return {
+                "success": False,
+                "message": "No employee data found to display",
+                "response_type": "error"
+            }
+        
+        return {
+            "success": True,
+            "message": f"**{employee_data.get('name')}** - {employee_data.get('department_name')} Department\n\n"
+                     f"• **Role**: {employee_data.get('role')}\n"
+                     f"• **Email**: {employee_data.get('email')}\n"
+                     f"• **Phone**: {employee_data.get('phone_number', 'Not provided')}\n"
+                     f"• **Address**: {employee_data.get('address', 'Not provided')}",
+            "response_type": "individual_profile",
+            "data": employee_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Error building employee details response: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Error retrieving employee details: {str(e)}",
+            "response_type": "error"
+        }
+
+def _handle_confirmation_followup(message: str, conversation_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handle confirmed human loop actions by returning form_request directly
+    (No longer calls employee tools to prevent double form triggers)
+    """
+    try:
+        pending_action = conversation_state.get('pending_action')
+        alternative_action = conversation_state.get('alternative_action')
+        suggested_data = conversation_state.get('suggested_data', {})
+        message_lower = message.lower()
+        
+        # Enhanced intent detection
+        create_keywords = ['add', 'create', 'new employee', 'add employee', 'create employee', 'add them', 'create them']
+        update_keywords = ['update', 'edit', 'modify', 'change', 'update them', 'edit them']
+        show_keywords = ['show', 'details', 'display', 'view', 'see', 'info']
+        
+        wants_create = any(keyword in message_lower for keyword in create_keywords)
+        wants_update = any(keyword in message_lower for keyword in update_keywords)
+        wants_show = any(keyword in message_lower for keyword in show_keywords) and not wants_create and not wants_update
+        
+        # Decision logic based on user intent and conversation state
+        if wants_create or (pending_action == 'create_employee' and not wants_show and not wants_update):
+            # User wants to create new employee - return form_request directly
+            return _build_create_form_response(conversation_state)
+            
+        elif wants_create and alternative_action == 'create_employee':
+            # User chose create over existing similar employee
+            return _build_create_form_response(conversation_state)
+            
+        elif wants_update or pending_action == 'update_employee':
+            # User wants to update existing employee - return form_request directly
+            return _build_update_form_response(conversation_state)
+            
+        elif wants_show or pending_action == 'show_employee_details':
+            # User wants to see employee details - return info (no form)
+            return _build_employee_details_response(conversation_state)
+        
+        # Default fallback - analyze primary action
+        elif pending_action == 'create_employee':
+            return _build_create_form_response(conversation_state)
+        elif pending_action == 'update_employee':
+            return _build_update_form_response(conversation_state)  
+        elif pending_action == 'show_employee_details':
+            return _build_employee_details_response(conversation_state)
+        
+        return {
+            "success": False,
+            "message": "I couldn't understand what you'd like to do. Please try again with 'yes' to confirm or 'no' to cancel.",
+            "response_type": "clarification_needed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error handling confirmation followup: {str(e)}")
+        return {
+            "success": False,
+            "message": f"An error occurred while processing your request: {str(e)}",
+            "response_type": "error"
+        }
+
+# Global conversation state storage (in production, use Redis or database)
+_conversation_states = {}
+
+def _store_conversation_state(user_session: str, state: Dict[str, Any]) -> None:
+    """Store conversation state for user session"""
+    _conversation_states[user_session] = state
+
+def _get_conversation_state(user_session: str) -> Optional[Dict[str, Any]]:
+    """Retrieve conversation state for user session"""
+    return _conversation_states.get(user_session)
+
+def _clear_conversation_state(user_session: str) -> None:
+    """Clear conversation state for user session"""
+    if user_session in _conversation_states:
+        del _conversation_states[user_session]
 
 def _validate_employee_data(name: str, email: str, role: str, department: str, operation: str) -> Dict[str, Any]:
     """Validate employee data for creation or update"""
@@ -1538,6 +2075,54 @@ def _get_department_id(department_name: str) -> Optional[int]:
         )
         return result[0]['id'] if result else None
     except:
+        return None
+
+def _find_employee_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
+    """Find employee by ID, email, or name"""
+    try:
+        # Try by ID first if it's numeric
+        if identifier.isdigit():
+            result = execute_query(
+                """
+                SELECT e.*, d.name as department_name
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE e.id = %s AND e.is_active = true
+                """,
+                (int(identifier),)
+            )
+            if result:
+                return result[0]
+        
+        # Try by email
+        result = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE LOWER(e.email) = LOWER(%s) AND e.is_active = true
+            """,
+            (identifier,)
+        )
+        if result:
+            return result[0]
+        
+        # Try by name (partial match)
+        result = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE LOWER(e.name) LIKE LOWER(%s) AND e.is_active = true
+            """,
+            (f"%{identifier}%",)
+        )
+        if result:
+            return result[0]
+            
+        return None
+    except Exception as e:
+        logger.error(f"Error finding employee by identifier '{identifier}': {e}")
         return None
 
 @tool
@@ -2716,11 +3301,80 @@ def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
 # LANGCHAIN GRAPH SETUP
 # ==============================================================================
 
+@tool
+def handle_human_loop_confirmation(
+    message: str,
+    user_session: str = "default"
+) -> Dict[str, Any]:
+    """
+    Handle user confirmations for human loop questions.
+    
+    This tool processes user responses to human loop questions like:
+    - "Yes, add the employee" -> triggers employee creation
+    - "Yes, update them" -> triggers employee update
+    - "Show their details" -> shows employee information
+    
+    Parameters:
+    - message: User's confirmation or response message
+    - user_session: User session ID for conversation state tracking
+    
+    Returns:
+    - Appropriate action result (form request, employee details, etc.)
+    """
+    try:
+        # Get conversation state for this user session
+        conversation_state = _get_conversation_state(user_session)
+        
+        if not conversation_state:
+            return {
+                "success": False,
+                "message": "I don't have any pending questions for you. Please start a new request.",
+                "response_type": "no_conversation_state"
+            }
+        
+        # Check if user is confirming
+        if _detect_confirmation_intent(message):
+            # Handle the confirmation
+            result = _handle_confirmation_followup(message, conversation_state)
+            # Clear conversation state after handling
+            _clear_conversation_state(user_session)
+            return result
+        
+        # Check if user is rejecting
+        elif _detect_rejection_intent(message):
+            # Clear conversation state and acknowledge
+            _clear_conversation_state(user_session)
+            return {
+                "success": True,
+                "message": "Understood. Let me know if you need anything else!",
+                "response_type": "acknowledgment"
+            }
+        
+        # User response doesn't match confirmation/rejection patterns
+        else:
+            return {
+                "success": True,
+                "message": "I'm not sure what you'd like to do. Could you please respond with 'yes' to confirm or 'no' to cancel?",
+                "response_type": "clarification_needed",
+                "conversation_state": conversation_state,  # Keep state active
+                "follow_up_questions": ["Yes, proceed", "No, cancel"]
+            }
+            
+    except Exception as e:
+        logger.error(f"Error handling human loop confirmation: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Error processing your response: {str(e)}",
+            "response_type": "error"
+        }
+
 tools = [
     # Enhanced employee query tools
     query_employee_details_intelligent, get_department_employee_summary, get_individual_employee_profile,
     # Employee management tools (create/update)
     create_employee_intelligent, update_employee_intelligent, search_employee_for_management, get_form_data_for_frontend,
+    # Human loop confirmation handling
+    handle_human_loop_confirmation,
     # Unified attendance tools
     query_attendance_intelligent, create_attendance_record, update_attendance_record, summarize_attendance_intelligent,
     # Non-attendance functions
@@ -2881,12 +3535,14 @@ I'm designed to be genuinely helpful and conversational - not robotic. I underst
 - Human-loop guidance - "John not found, create new record?", shows forms when needed
 - Complete change tracking - logs all modifications with timestamps and reasons
 
-**🚨 CRITICAL: Employee Management Tool Usage**
-ALWAYS use these specific tools for employee operations:
-- For "add employee", "create employee", "new employee" → ALWAYS call create_employee_intelligent() tool first
-- For "update employee", "change employee info" → ALWAYS call update_employee_intelligent() tool first
-- For "find employee", "show employee" → ALWAYS call query_employee_details_intelligent() tool first
-- NEVER ask users manually for employee details - the tools will automatically trigger forms when needed
+**🚨 CRITICAL: Employee Management Tool Usage - IMMEDIATE FORM TRIGGERING**
+MANDATORY: ALWAYS use these specific tools for employee operations WITHOUT ANY PRELIMINARY QUESTIONS:
+- For "add employee", "create employee", "new employee", "add new user", "create user" → IMMEDIATELY call create_employee_intelligent() tool first
+- For "update employee", "change employee info", "edit employee", "modify employee details", "update user", "change user details", "edit user", "modify user" → IMMEDIATELY call update_employee_intelligent() tool first  
+- For "find employee", "show employee", "employee details", "employee information" → IMMEDIATELY call query_employee_details_intelligent() tool first
+- ABSOLUTELY NEVER ask users manually for employee details - the tools automatically trigger frontend forms when needed
+- DO NOT provide text responses like "I can help you add employees" or "What would you like to update?" - ALWAYS trigger the appropriate tool immediately
+- CRITICAL: Even if user says "update [NAME] details" and you found the employee, you MUST still call update_employee_intelligent() to trigger the form
 
 **🔄 Human-Loop Employee Management Workflow:**
 When a user asks to update an employee that doesn't exist:
@@ -3020,24 +3676,33 @@ When I analyze data, I automatically suggest relevant questions like:
 
 ## 🔥 IMPORTANT TOOL USAGE RULES 🔥
 
-**EMPLOYEE MANAGEMENT TOOL PRIORITY:**
-When user mentions ANY of these keywords or variations:
-- "add employee", "create employee", "new employee", "add new employee", "need to add employee"
-- "update employee", "change employee", "modify employee", "edit employee"
-- "find employee", "show employee", "get employee details", "employee information"
+**🎯 EMPLOYEE MANAGEMENT TOOL PRIORITY - ZERO DELAY EXECUTION:**
+When user mentions ANY of these keywords or variations (even as part of longer sentences):
+- CREATE TRIGGERS: "add employee", "create employee", "new employee", "add new employee", "need to add employee", "add user", "create user", "new user", "add new user"
+- UPDATE TRIGGERS: "update employee", "change employee", "modify employee", "edit employee", "update user", "change user", "edit user details", "update [NAME]", "change [NAME]", "edit [NAME]", "modify [NAME] details", "[NAME] details", "update details"
+- LOOKUP TRIGGERS: "find employee", "show employee", "get employee details", "employee information", "find user", "show user", "user details"
 
-YOU MUST IMMEDIATELY:
-1. Call the appropriate tool FIRST (create_employee_intelligent, update_employee_intelligent, query_employee_details_intelligent)
-2. Let the tool handle form requests and responses
-3. NEVER ask for details manually - tools will automatically trigger forms when needed
-4. NEVER provide manual forms or ask step-by-step questions
+MANDATORY IMMEDIATE ACTION (NO EXCEPTIONS - NOT EVEN FOR CLARIFICATION):
+1. INSTANTLY call the appropriate tool FIRST - ZERO text responses beforehand  
+2. create_employee_intelligent() for ANY creation-related requests
+3. update_employee_intelligent() for ANY update-related requests (even with employee names)
+4. query_employee_details_intelligent() for lookup-only requests
+5. Let the tool handle form requests and responses automatically
+6. NEVER ask "what would you like to update?" - just call the tool
+7. NEVER provide explanatory text responses - tools handle everything immediately
 
-**Example:**
-User: "I need to add new employee"
-✅ CORRECT: Call create_employee_intelligent("I need to add new employee") immediately
-❌ WRONG: Ask "Could you please provide me with the following details..."
+**Enhanced Examples:**
+User: "I need to add new employee" → INSTANTLY call create_employee_intelligent("I need to add new employee")
+User: "add new user John Smith" → INSTANTLY call create_employee_intelligent("add new user John Smith")  
+User: "update employee details" → INSTANTLY call update_employee_intelligent("update employee details")
+User: "update John Smith details" → INSTANTLY call update_employee_intelligent("update John Smith details")
+User: "change Sarah's information" → INSTANTLY call update_employee_intelligent("change Sarah's information")
+User: "edit Mike Johnson" → INSTANTLY call update_employee_intelligent("edit Mike Johnson")
+User: "can you help me add employees?" → INSTANTLY call create_employee_intelligent("can you help me add employees?")
 
-The tools are designed to handle missing information automatically through form popups.
+❌ NEVER DO: "I found [employee]. What would you like to update?" 
+❌ NEVER DO: "Here are [employee] details. Let me know what to change."
+✅ ALWAYS DO: Trigger update_employee_intelligent() immediately - it will show form with current data
 
 ---
 
@@ -3215,6 +3880,30 @@ async def chat_endpoint(message: ChatMessage):
             thread_id = "hr_chat_session_1"
             config = RunnableConfig(configurable={"thread_id": thread_id})
             
+            # Check if user is responding to a human loop question
+            conversation_state = _get_conversation_state(thread_id)
+            if conversation_state and (_detect_confirmation_intent(message.message) or _detect_rejection_intent(message.message)):
+                # Handle human loop confirmation directly
+                result = _handle_confirmation_followup(message.message, conversation_state)
+                _clear_conversation_state(thread_id)
+                
+                # Stream the result
+                response_obj = {"type": "text", "content": result.get('message', '')}
+                yield f"data: {json.dumps(response_obj)}\n\n"
+                
+                # Check if this triggers a form
+                if result.get('response_type') in ['form_request', 'employee_found_update_form']:
+                    form_response = {
+                        "type": "form_request",
+                        "action": result.get('action', 'create_employee'),
+                        "form_data": result.get('form_data', {}),
+                        "content": ""
+                    }
+                    yield f"data: {json.dumps(form_response)}\n\n"
+                
+                yield f"data: [DONE]\n\n"
+                return
+            
             # Check if this is the first message in the conversation
             # If so, include the system prompt
             try:
@@ -3259,9 +3948,9 @@ async def chat_endpoint(message: ChatMessage):
                                 else:
                                     tool_result = tool_msg.content
                                 
-                                # Check if tool result indicates a form request
+                                # Check if tool result indicates a form request or human loop question
                                 response_type = tool_result.get('response_type')
-                                if response_type in ['form_request', 'employee_found_update_form', 'employee_not_found_create_offer']:
+                                if response_type in ['form_request', 'employee_found_update_form', 'employee_not_found_create_offer', 'human_loop_question']:
                                     
                                     # Map tool response to frontend form request format
                                     if response_type == 'form_request':
@@ -3269,14 +3958,14 @@ async def chat_endpoint(message: ChatMessage):
                                             "type": "form_request",
                                             "action": tool_result.get('action', 'create_employee'),
                                             "form_data": tool_result.get('form_data', {}),
-                                            "content": tool_result.get('message', 'Opening form...')
+                                            "content": ""  # Empty content - only show form popup
                                         }
                                     elif response_type == 'employee_found_update_form':
                                         form_response = {
                                             "type": "form_request",
                                             "action": "update_employee",
                                             "form_data": tool_result.get('form_data', {}),
-                                            "content": tool_result.get('message', 'Opening update form...')
+                                            "content": ""  # Empty content - only show form popup
                                         }
                                     elif response_type == 'employee_not_found_create_offer':
                                         form_response = {
@@ -3284,10 +3973,26 @@ async def chat_endpoint(message: ChatMessage):
                                             "suggested_name": tool_result.get('suggested_name', ''),
                                             "content": tool_result.get('message', 'Employee not found')
                                         }
+                                    elif response_type == 'human_loop_question':
+                                        # Store conversation state and send human loop question
+                                        conversation_state = tool_result.get('conversation_state', {})
+                                        _store_conversation_state(thread_id, conversation_state)
+                                        
+                                        form_response = {
+                                            "type": "human_loop_question", 
+                                            "content": tool_result.get('message', ''),
+                                            "follow_up_questions": tool_result.get('follow_up_questions', []),
+                                            "conversation_state": conversation_state
+                                        }
                                     
-                                    # Stream the form request to frontend
+                                    # Stream the response to frontend
                                     yield f"data: {json.dumps(form_response)}\n\n"
                                     final_response.append(form_response)
+                                    
+                                    # Stop processing after form requests, but continue for human loop questions
+                                    if response_type in ['form_request', 'employee_found_update_form']:
+                                        yield f"data: [DONE]\n\n"
+                                        return
                                     
                             except (json.JSONDecodeError, AttributeError):
                                 # If tool content is not JSON or has no expected format, continue
@@ -3303,6 +4008,287 @@ async def chat_endpoint(message: ChatMessage):
             status_code=500,
             detail="An unexpected error occurred. Please try again later."
         )
+
+# Separate API functions for direct form submissions (not LangChain tools)
+def create_employee_api(
+    name: str,
+    email: str, 
+    role: str,
+    department: str,
+    phone_number: str = "",
+    address: str = ""
+) -> Dict[str, Any]:
+    """
+    Direct API function for employee creation from forms.
+    This function is called directly by API endpoints, not through LangChain tools.
+    """
+    try:
+        # Validate required fields
+        if not name or not email or not role or not department:
+            missing_fields = []
+            if not name: missing_fields.append("name")
+            if not email: missing_fields.append("email")
+            if not role: missing_fields.append("role") 
+            if not department: missing_fields.append("department")
+            
+            return {
+                "success": False,
+                "message": f"Missing required fields: {', '.join(missing_fields)}",
+                "response_type": "validation_error"
+            }
+        
+        # Validate provided data
+        validation_result = _validate_employee_data(name, email, role, department, "create")
+        if not validation_result["valid"]:
+            return {
+                "success": False,
+                "message": validation_result["message"],
+                "response_type": "validation_error"
+            }
+        
+        # Check for duplicate email
+        existing_employee = execute_query(
+            "SELECT id, name FROM employees WHERE LOWER(email) = LOWER(%s)",
+            (email,)
+        )
+        
+        if existing_employee:
+            return {
+                "success": False,
+                "message": f"Email '{email}' is already registered to {existing_employee[0]['name']}. Each employee must have a unique email address.",
+                "response_type": "validation_error"
+            }
+        
+        # Get department ID
+        dept_id = _get_department_id(department)
+        if not dept_id:
+            return {
+                "success": False,
+                "message": f"Department '{department}' not found.",
+                "response_type": "validation_error"
+            }
+        
+        # Create the employee
+        execute_query(
+            """
+            INSERT INTO employees (name, email, role, department_id, phone_number, address, is_active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (name, email, role, dept_id, phone_number or None, address or None, True, datetime.now(), datetime.now()),
+            fetch=False
+        )
+        
+        # Retrieve the created employee with department info
+        created_employee = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE e.email = %s
+            """,
+            (email,)
+        )[0]
+        
+        return {
+            "success": True,
+            "message": f"Successfully created employee record for {name}!",
+            "response_type": "success_created",
+            "data": created_employee
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in create_employee_api: {e}")
+        return {
+            "success": False,
+            "message": f"Error creating employee: {str(e)}",
+            "response_type": "error"
+        }
+
+def update_employee_api(
+    employee_identifier: str,
+    field_updates: Dict[str, Any],
+    update_reason: str = ""
+) -> Dict[str, Any]:
+    """
+    Direct API function for employee updates from forms.
+    This function is called directly by API endpoints, not through LangChain tools.
+    """
+    try:
+        # Find the employee
+        employee = _find_employee_by_identifier(employee_identifier)
+        if not employee:
+            return {
+                "success": False,
+                "message": f"Employee '{employee_identifier}' not found.",
+                "response_type": "employee_not_found"
+            }
+        
+        # Validate updates
+        changes_made = []
+        update_queries = []
+        params = []
+        
+        for field, new_value in field_updates.items():
+            if field in ['name', 'email', 'role', 'department', 'phone_number', 'address']:
+                old_value = employee.get(field, '')
+                
+                # Handle department name to ID conversion
+                if field == 'department':
+                    # Compare with actual department name from database
+                    current_dept_name = employee.get('department_name', employee.get('department', ''))
+                    if current_dept_name != new_value:
+                        dept_id = _get_department_id(new_value)
+                        if not dept_id:
+                            return {
+                                "success": False,
+                                "message": f"Department '{new_value}' not found.",
+                                "response_type": "validation_error"
+                            }
+                        update_queries.append("department_id = %s")
+                        params.append(dept_id)
+                        changes_made.append(f"Department: '{current_dept_name}' → '{new_value}'")
+                elif field == 'email':
+                    # Check for duplicate email (excluding current employee)
+                    if old_value.lower() != new_value.lower():
+                        existing = execute_query(
+                            "SELECT id, name FROM employees WHERE LOWER(email) = LOWER(%s) AND id != %s",
+                            (new_value, employee['id'])
+                        )
+                        if existing:
+                            return {
+                                "success": False,
+                                "message": f"Email '{new_value}' is already in use by {existing[0]['name']}.",
+                                "response_type": "validation_error"
+                            }
+                        update_queries.append("email = %s")
+                        params.append(new_value)
+                        changes_made.append(f"Email: '{old_value}' → '{new_value}'")
+                else:
+                    # Handle other fields
+                    if old_value != new_value:
+                        update_queries.append(f"{field} = %s")
+                        params.append(new_value)
+                        field_display = field.replace('_', ' ').title()
+                        changes_made.append(f"{field_display}: '{old_value}' → '{new_value}'")
+        
+        if not changes_made:
+            return {
+                "success": True,
+                "message": "No changes were made - all values are already current.",
+                "response_type": "no_changes",
+                "data": employee,
+                "changes_made": []
+            }
+        
+        # Update the employee
+        if update_queries:
+            update_queries.append("updated_at = %s")
+            params.append(datetime.now())
+            params.append(employee['id'])
+            
+            execute_query(
+                f"UPDATE employees SET {', '.join(update_queries)} WHERE id = %s",
+                params,
+                fetch=False
+            )
+        
+        # Get updated employee data
+        updated_employee = execute_query(
+            """
+            SELECT e.*, d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE e.id = %s
+            """,
+            (employee['id'],)
+        )[0]
+        
+        return {
+            "success": True,
+            "message": f"Successfully updated {employee['name']}'s information!",
+            "response_type": "success_updated",
+            "data": updated_employee,
+            "changes_made": changes_made
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in update_employee_api: {e}")
+        return {
+            "success": False,
+            "message": f"Error updating employee: {str(e)}",
+            "response_type": "error"
+        }
+
+@app.post("/tools/create_employee_intelligent")
+async def create_employee_endpoint(request: EmployeeCreateRequest):
+    """Direct API endpoint for employee creation from forms"""
+    try:
+        # Call the new API-specific function instead of the LangChain tool
+        result = create_employee_api(
+            name=request.name,
+            email=request.email,
+            role=request.role,
+            department=request.department,
+            phone_number=request.phone_number,
+            address=request.address
+        )
+        
+        # Return the result with consistent format
+        if result.get("success", False):
+            return {
+                "success": True,
+                "message": f"Employee {request.name} created successfully!",
+                "data": result.get("data", {}),
+                "employee": result.get("data", {})
+            }
+        else:
+            return {
+                "success": False,
+                "message": result.get("message", "Failed to create employee"),
+                "error": result.get("message", "Unknown error")
+            }
+            
+    except Exception as e:
+        logger.error(f"Employee creation error: {e}")
+        return {
+            "success": False,
+            "message": f"Error creating employee: {str(e)}",
+            "error": str(e)
+        }
+
+@app.post("/tools/update_employee_intelligent")
+async def update_employee_endpoint(request: EmployeeUpdateRequest):
+    """Direct API endpoint for employee updates from forms"""
+    try:
+        # Call the new API-specific function instead of the LangChain tool
+        result = update_employee_api(
+            employee_identifier=request.employee_identifier,
+            field_updates=request.field_updates,
+            update_reason=request.update_reason
+        )
+        
+        # Return the result with consistent format
+        if result.get("success", False):
+            return {
+                "success": True,
+                "message": f"Employee updated successfully!",
+                "data": result.get("data", {}),
+                "changes_made": result.get("changes_made", [])
+            }
+        else:
+            return {
+                "success": False,
+                "message": result.get("message", "Failed to update employee"),
+                "error": result.get("message", "Unknown error")
+            }
+            
+    except Exception as e:
+        logger.error(f"Employee update error: {e}")
+        return {
+            "success": False,
+            "message": f"Error updating employee: {str(e)}",
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":

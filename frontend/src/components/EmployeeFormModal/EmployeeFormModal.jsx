@@ -33,21 +33,37 @@ const EmployeeFormModal = ({
       
       console.log('Initializing form with data:', { preFilledValues, currentValues, formData });
       
+      // For update mode, prioritize current_values; for create mode, prioritize pre_filled
+      const isUpdateMode = action === 'update_employee';
+      const primaryData = isUpdateMode ? currentValues : preFilledValues;
+      const secondaryData = isUpdateMode ? preFilledValues : currentValues;
+      
       setFormValues({
-        name: preFilledValues.name || currentValues.name || '',
-        email: preFilledValues.email || currentValues.email || '',
-        role: preFilledValues.role || currentValues.role || '',
-        department: preFilledValues.department || currentValues.department || '',
-        phone_number: preFilledValues.phone_number || currentValues.phone_number || '',
-        address: preFilledValues.address || currentValues.address || ''
+        name: primaryData.name || secondaryData.name || '',
+        email: primaryData.email || secondaryData.email || '',
+        role: primaryData.role || secondaryData.role || '',
+        department: primaryData.department || secondaryData.department || '',
+        phone_number: primaryData.phone_number || secondaryData.phone_number || '',
+        address: primaryData.address || secondaryData.address || ''
       });
       
       // Set dropdown options
       setDepartments(formData.departments || []);
       setRoles(formData.roles || []);
       setErrors({});
+    } else if (isOpen && !formData) {
+      // Clear form if no data provided
+      setFormValues({
+        name: '',
+        email: '',
+        role: '',
+        department: '',
+        phone_number: '',
+        address: ''
+      });
+      setErrors({});
     }
-  }, [isOpen, formData]);
+  }, [isOpen, formData, action]);
 
   const handleInputChange = (field, value) => {
     setFormValues(prev => ({
@@ -186,9 +202,27 @@ const EmployeeFormModal = ({
     <div className="modal-overlay" onClick={handleClose}>
       <div className="employee-form-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>
-            {action === 'create_employee' ? 'Create New Employee' : 'Update Employee'}
-          </h2>
+          <div className="modal-title-section">
+            <h2>
+              {action === 'create_employee' ? (
+                <>
+                  <span className="modal-icon create">➕</span>
+                  Create New Employee
+                </>
+              ) : (
+                <>
+                  <span className="modal-icon update">✏️</span>
+                  Update Employee
+                  {formValues.name && <span className="employee-name"> - {formValues.name}</span>}
+                </>
+              )}
+            </h2>
+            {action === 'update_employee' && (
+              <p className="modal-subtitle">
+                Modify the employee information below and click Update to save changes.
+              </p>
+            )}
+          </div>
           <button className="modal-close-btn" onClick={handleClose}>
             ✕
           </button>
@@ -204,7 +238,10 @@ const EmployeeFormModal = ({
                 value={formValues.name}
                 onChange={(e) => handleInputChange('name', e.target.value)}
                 className={errors.name ? 'error' : ''}
-                placeholder="Enter full name"
+                placeholder={action === 'update_employee' && formData?.current_values?.name ? 
+                  `Current: ${formData.current_values.name}` : 
+                  "Enter full name"
+                }
                 disabled={isSubmitting}
               />
               {errors.name && <span className="error-message">{errors.name}</span>}
@@ -218,7 +255,10 @@ const EmployeeFormModal = ({
                 value={formValues.email}
                 onChange={(e) => handleInputChange('email', e.target.value)}
                 className={errors.email ? 'error' : ''}
-                placeholder="Enter email address"
+                placeholder={action === 'update_employee' && formData?.current_values?.email ? 
+                  `Current: ${formData.current_values.email}` : 
+                  "Enter email address"
+                }
                 disabled={isSubmitting}
               />
               {errors.email && <span className="error-message">{errors.email}</span>}
@@ -235,7 +275,12 @@ const EmployeeFormModal = ({
                 className={errors.role ? 'error' : ''}
                 disabled={isSubmitting}
               >
-                <option value="">Select a role</option>
+                <option value="">
+                  {action === 'update_employee' && formData?.current_values?.role ? 
+                    `Current: ${formData.current_values.role} - Select to change` : 
+                    "Select a role"
+                  }
+                </option>
                 {roles.map((role) => (
                   <option key={role.value} value={role.value}>
                     {role.label}
@@ -258,7 +303,12 @@ const EmployeeFormModal = ({
                 className={errors.department ? 'error' : ''}
                 disabled={isSubmitting}
               >
-                <option value="">Select a department</option>
+                <option value="">
+                  {action === 'update_employee' && formData?.current_values?.department ? 
+                    `Current: ${formData.current_values.department} - Select to change` : 
+                    "Select a department"
+                  }
+                </option>
                 {departments.map((dept) => (
                   <option key={dept.value} value={dept.value}>
                     {dept.label}
@@ -277,7 +327,10 @@ const EmployeeFormModal = ({
                 type="tel"
                 value={formValues.phone_number}
                 onChange={(e) => handleInputChange('phone_number', e.target.value)}
-                placeholder="Enter phone number"
+                placeholder={action === 'update_employee' && formData?.current_values?.phone_number ? 
+                  `Current: ${formData.current_values.phone_number}` : 
+                  "Enter phone number"
+                }
                 disabled={isSubmitting}
               />
             </div>
@@ -289,7 +342,10 @@ const EmployeeFormModal = ({
               id="address"
               value={formValues.address}
               onChange={(e) => handleInputChange('address', e.target.value)}
-              placeholder="Enter address"
+              placeholder={action === 'update_employee' && formData?.current_values?.address ? 
+                `Current: ${formData.current_values.address}` : 
+                "Enter address"
+              }
               rows="3"
               disabled={isSubmitting}
             />
@@ -306,7 +362,7 @@ const EmployeeFormModal = ({
             </button>
             <button
               type="submit"
-              className="btn btn-primary"
+              className={`btn ${action === 'create_employee' ? 'btn-primary-create' : 'btn-primary-update'}`}
               disabled={isSubmitting}
             >
               {isSubmitting ? (
@@ -315,7 +371,19 @@ const EmployeeFormModal = ({
                   {action === 'create_employee' ? 'Creating...' : 'Updating...'}
                 </>
               ) : (
-                action === 'create_employee' ? 'Create Employee' : 'Update Employee'
+                <>
+                  {action === 'create_employee' ? (
+                    <>
+                      <span className="btn-icon">➕</span>
+                      Create Employee
+                    </>
+                  ) : (
+                    <>
+                      <span className="btn-icon">💾</span>
+                      Update Employee
+                    </>
+                  )}
+                </>
               )}
             </button>
           </div>

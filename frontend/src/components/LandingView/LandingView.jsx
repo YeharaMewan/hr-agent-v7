@@ -1,12 +1,61 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import SuggestionChips from '../SuggestionChips/SuggestionChips';
 
 const LandingView = ({ onFirstMessage }) => {
   const [inputValue, setInputValue] = useState('');
+  const inputRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const [originalViewportHeight, setOriginalViewportHeight] = useState(window.innerHeight);
+
+  // Mobile detection and keyboard handling
+  useEffect(() => {
+    const checkIfMobile = () => {
+      const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+      const isMobileDevice = /android|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase());
+      const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      const isSmallScreen = window.innerWidth <= 768;
+      
+      return isMobileDevice || (isTouchDevice && isSmallScreen);
+    };
+
+    setIsMobile(checkIfMobile());
+    setOriginalViewportHeight(window.visualViewport?.height || window.innerHeight);
+  }, []);
+
+  // Keyboard visibility detection for mobile
+  useEffect(() => {
+    if (!isMobile) return;
+
+    const handleViewportChange = () => {
+      const currentHeight = window.visualViewport?.height || window.innerHeight;
+      const heightDifference = originalViewportHeight - currentHeight;
+      const keyboardThreshold = 150;
+      
+      const keyboardIsOpen = heightDifference > keyboardThreshold;
+      setIsKeyboardOpen(keyboardIsOpen);
+    };
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleViewportChange);
+      return () => {
+        window.visualViewport.removeEventListener('resize', handleViewportChange);
+      };
+    } else {
+      window.addEventListener('resize', handleViewportChange);
+      return () => {
+        window.removeEventListener('resize', handleViewportChange);
+      };
+    }
+  }, [isMobile, originalViewportHeight]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (inputValue.trim()) {
+      // Hide keyboard on mobile before sending message
+      if (isMobile && inputRef.current) {
+        inputRef.current.blur();
+      }
       onFirstMessage(inputValue);
       setInputValue('');
     }
@@ -20,7 +69,23 @@ const LandingView = ({ onFirstMessage }) => {
   };
 
   const handleChipClick = (command) => {
+    // Hide keyboard on mobile before sending message
+    if (isMobile && inputRef.current) {
+      inputRef.current.blur();
+    }
     onFirstMessage(command);
+  };
+
+  // Handle mobile input focus
+  const handleMobileInputFocus = () => {
+    if (isMobile && inputRef.current) {
+      setTimeout(() => {
+        inputRef.current?.focus();
+        // Prevent zoom on iOS
+        inputRef.current?.setAttribute('readonly', 'readonly');
+        inputRef.current?.removeAttribute('readonly');
+      }, 100);
+    }
   };
 
   // Enhanced attendance-focused landing chips
@@ -34,7 +99,7 @@ const LandingView = ({ onFirstMessage }) => {
   ];
 
   return (
-    <div className="landing-container">
+    <div className={`landing-container ${isMobile ? 'mobile' : ''} ${isKeyboardOpen ? 'keyboard-open' : ''}`}>
       <div className="title-block">
         <img src="/RiseHRLogo.png" alt="RiseHR Logo" className="logo" />
         <p className="subtitle">Your Intelligent HR Partner</p>
@@ -48,13 +113,17 @@ const LandingView = ({ onFirstMessage }) => {
 
       <form onSubmit={handleSubmit} className="new-input-area">
         <input
+          ref={inputRef}
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyPress={handleKeyPress}
+          onFocus={handleMobileInputFocus}
+          onTouchStart={handleMobileInputFocus}
           className="landing-input"
           placeholder="Ask anything about HR..."
           autoComplete="off"
+          inputMode={isMobile ? "text" : undefined}
         />
       </form>
     </div>

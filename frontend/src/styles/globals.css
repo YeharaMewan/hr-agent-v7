@@ -16,6 +16,10 @@
     --dashboard-bg: #1e1e1e;
     --card-bg: #2a2a2a;
     --success-color: #22c55e;
+    /* Dynamic keyboard positioning variables */
+    --keyboard-height: 0px;
+    --available-height: 100vh;
+    --input-bottom-offset: 0px;
 }
 
 /* Reset Styles */
@@ -103,6 +107,54 @@ body {
     width: 100%;
     max-width: 700px;
     padding: 20px;
+    position: relative;
+    min-height: 100vh;
+    justify-content: center;
+}
+
+/* Mobile landing page keyboard handling */
+.landing-container.mobile.keyboard-open {
+    justify-content: flex-start;
+    padding-top: 2rem;
+    gap: 1.5rem;
+    /* Enhanced overflow and width controls */
+    overflow-x: hidden;
+    max-width: 100vw;
+    width: 100%;
+    box-sizing: border-box;
+    /* Ensure proper viewport handling */
+    position: relative;
+}
+
+.landing-container.mobile.keyboard-open .title-block {
+    margin-bottom: 1rem;
+}
+
+.landing-container.mobile.keyboard-open .suggestion-chips-container {
+    margin-bottom: 1rem;
+}
+
+.landing-container.mobile.keyboard-open .new-input-area {
+    position: fixed;
+    bottom: 20px;
+    bottom: max(20px, env(safe-area-inset-bottom, 20px));
+    left: 20px;
+    left: max(20px, env(safe-area-inset-left, 20px));
+    right: 20px;
+    right: max(20px, env(safe-area-inset-right, 20px));
+    z-index: 1000;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.3);
+    /* Enhanced width calculation to prevent overflow */
+    width: calc(100vw - 40px);
+    width: calc(100vw - max(40px, env(safe-area-inset-left, 20px) + env(safe-area-inset-right, 20px) + 40px));
+    max-width: calc(100vw - 40px);
+    /* Ensure proper box sizing */
+    box-sizing: border-box;
+    /* Prevent any overflow */
+    overflow: hidden;
+    /* Center alignment fallback */
+    margin: 0 auto;
+    transform: translateX(0);
 }
 
 .title-block {
@@ -123,12 +175,12 @@ body {
 
 /* Suggestion Chips */
 .suggestion-chips-container {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 12px;
     margin-bottom: 1rem;
     width: 100%;
+    justify-items: center;
 }
 
 .suggestion-chip {
@@ -172,6 +224,13 @@ body {
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     transition: border-color 0.3s, box-shadow 0.3s;
     height: 56px;
+    /* Enhanced mobile compatibility */
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow: hidden;
+    /* Viewport constraint support */
+    min-width: 0;
+    flex-shrink: 0;
 }
 
 .new-input-area:focus-within {
@@ -308,73 +367,170 @@ body {
     align-items: center;
     width: 100%;
     flex-shrink: 0;
+    /* Enhanced mobile compatibility (consistent with landing page) */
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow: hidden;
+    /* Viewport constraint support */
+    min-width: 0;
 }
 
 .input-content-wrapper {
     width: 100%;
     max-width: 800px;
+    /* Enhanced mobile compatibility (consistent with landing page) */
+    box-sizing: border-box;
+    overflow: hidden;
+    min-width: 0;
+    position: relative;
 }
 
 .chat-input-wrapper {
     position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
 }
 
 .chat-input {
     width: 100%;
     height: 52px;
     background-color: var(--bot-message-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 18px;
-    padding: 12px 60px 12px 54px;
+    border: 2px solid var(--border-color); /* Enhanced border for consistency */
+    border-radius: 26px; /* More rounded for modern look */
+    padding: 12px 65px 12px 60px; /* Proper spacing for buttons inside chatbox */
     font-size: 1rem;
     color: var(--text-color);
     outline: none;
-    transition: all 0.2s;
+    /* Enhanced transitions for smooth interactions */
+    transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 0.3s ease,
+                transform 0.2s ease;
+    /* Consistent appearance across browsers */
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    /* Hardware acceleration */
+    transform: translateZ(0);
+    will-change: border-color, box-shadow;
+    /* Consistent line-height for alignment */
+    line-height: 1.5;
+    /* Ensure consistent font rendering */
+    font-family: inherit;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    /* Lower z-index than buttons */
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
 }
 
 .chat-input:focus {
     border-color: var(--accent-color);
     box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+    /* Subtle scale for visual feedback */
+    transform: translateZ(0) scale(1.01);
+}
+
+.chat-input:hover:not(:focus) {
+    border-color: rgba(167, 139, 250, 0.5);
+    background-color: rgba(167, 139, 250, 0.02);
+}
+
+.chat-input::placeholder {
+    color: var(--placeholder-color);
+    opacity: 1; /* Ensure consistent placeholder visibility */
+    font-weight: 400;
+    transition: opacity 0.3s ease;
+}
+
+.chat-input:focus::placeholder {
+    opacity: 0.7;
 }
 
 .send-button {
-    position: absolute;
-    right: 8px;
+    position: absolute !important;
+    right: 10px !important; /* Proper inside spacing */
     top: 50%;
-    transform: translateY(-50%);
-    width: 36px;
-    height: 36px;
-    background-color: var(--accent-color);
-    border: none;
-    border-radius: 50%;
-    color: #121212;
+    transform: translateY(-50%) !important;
+    width: 44px !important; /* Optimal desktop size */
+    height: 44px !important;
+    background-color: var(--accent-color) !important;
+    border: none !important;
+    border-radius: 50% !important;
+    color: #ffffff !important;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 12px rgba(167, 139, 250, 0.4) !important;
+    z-index: 102 !important; /* Higher than input */
+    padding: 0 !important;
+    font-size: 0 !important; /* Hide any text content */
+    box-sizing: border-box !important;
+    /* Enhanced alignment and containment */
+    margin: 0 !important;
+    /* Ensure containment within chatbox */
+    max-width: 44px;
+    max-height: 44px;
+}
+
+.send-button svg {
+    width: 20px !important;
+    height: 20px !important;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
+    transform: rotate(0deg);
+    transition: transform 0.2s ease;
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    flex-shrink: 0;
+    color: #ffffff !important;
 }
 
 .send-button:hover:not(:disabled) {
     background-color: var(--accent-hover-color);
-    transform: translateY(-50%) scale(1.05);
+    transform: translateY(-50%) scale(1.08) !important;
+    box-shadow: 0 4px 16px rgba(167, 139, 250, 0.5);
+    /* Enhanced visual hierarchy */
+    border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.send-button:hover:not(:disabled) svg {
+    transform: rotate(5deg);
+}
+
+.send-button:active:not(:disabled) {
+    transform: translateY(-50%) scale(0.95);
+    background-color: var(--accent-hover-color);
 }
 
 .send-button:disabled {
     background-color: #3f3f46;
     cursor: not-allowed;
+    opacity: 0.5;
+    box-shadow: none;
+}
+
+.send-button:disabled svg {
     opacity: 0.6;
 }
 
 .chip-toggle-button {
-    position: absolute;
-    left: 8px;
+    position: absolute !important;
+    left: 10px !important; /* Proper inside spacing */
     top: 50%;
     transform: translateY(-50%);
-    width: 36px;
-    height: 36px;
+    width: 40px !important; /* Optimal desktop size */
+    height: 40px !important;
     background-color: transparent;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-color) !important;
     border-radius: 50%;
     color: var(--text-muted-color);
     cursor: pointer;
@@ -382,12 +538,25 @@ body {
     align-items: center;
     justify-content: center;
     transition: all 0.2s;
+    /* Enhanced alignment and containment */
+    margin: 0;
+    box-sizing: border-box;
+    z-index: 102 !important; /* Higher than input */
+    /* Ensure containment within chatbox */
+    max-width: 40px;
+    max-height: 40px;
+    /* Enhanced visual presence */
+    backdrop-filter: blur(2px);
+    font-size: 16px;
 }
 
 .chip-toggle-button:hover {
     background-color: var(--chip-hover-bg);
     color: var(--accent-color);
     border-color: var(--accent-color);
+    /* Enhanced visual presence on hover */
+    box-shadow: 0 2px 8px rgba(167, 139, 250, 0.3);
+    transform: translateY(-50%) scale(1.05);
 }
 
 /* Chat Suggestion Chips */
@@ -498,18 +667,282 @@ body {
 }
 
 /* Responsive Design */
-@media (max-width: 768px) {
+
+/* Mobile-first approach - Small devices (phones, 600px and down) */
+@media (max-width: 600px) {
+    body {
+        font-size: 14px;
+        overflow-x: hidden; /* Prevent horizontal scrolling */
+        overflow-y: auto;
+        /* Handle safe areas for mobile devices */
+        padding-bottom: env(safe-area-inset-bottom);
+        /* Ensure proper viewport handling */
+        max-width: 100vw;
+        box-sizing: border-box;
+    }
+    
+    /* Support for mobile viewport units */
+    .chat-container {
+        height: 100vh;
+        height: 100svh; /* Small viewport height */
+        min-height: 100vh;
+        min-height: 100svh;
+    }
+    
+    .landing-container { 
+        gap: 1rem; 
+        padding: 0.75rem; 
+        max-width: 95%;
+        /* Enhanced mobile width handling */
+        width: calc(100vw - 1.5rem);
+        max-width: calc(100vw - 1.5rem);
+        box-sizing: border-box;
+        overflow-x: hidden;
+    }
+    
+    .logo { 
+        max-width: 160px; 
+    }
+    
+    .subtitle {
+        font-size: 0.9rem;
+    }
+    
+    /* Chat improvements for mobile */
+    .chat-container {
+        height: 100vh;
+        height: 100dvh; /* Dynamic viewport height for mobile */
+    }
+    
+    .chat-header { 
+        padding: 0.5rem 1rem;
+        min-height: 50px;
+    }
+    
+    .header-logo {
+        height: 24px;
+    }
+    
+    .chat-messages {
+        padding: 0.75rem;
+        /* Account for mobile keyboards */
+        padding-bottom: 1rem;
+    }
+    
+    .message-wrapper { 
+        max-width: 90%; 
+        margin-bottom: 1.5rem;
+    }
+    
+    .message-bubble {
+        padding: 12px 16px;
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+    
+    /* Enhanced input area for mobile */
+    .input-area-container { 
+        padding: 0.75rem;
+        position: relative;
+        background-color: var(--chat-bg);
+        /* Enhanced mobile width handling (consistent with landing page) */
+        max-width: 100vw;
+        width: 100%;
+        box-sizing: border-box;
+        overflow-x: hidden;
+    }
+    
+    .input-content-wrapper {
+        max-width: 100%;
+        width: 100%;
+        box-sizing: border-box;
+        position: relative;
+    }
+    
+    .chat-input-wrapper {
+        position: relative;
+        display: flex;
+        align-items: center;
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    
+    .chat-input {
+        height: 50px !important; /* Slightly larger for better mobile UX */
+        font-size: 16px !important; /* Prevents zoom on iOS */
+        padding: 12px 50px 12px 46px !important; /* Adjusted padding for smaller buttons */
+        border-radius: 25px !important;
+        width: 100% !important;
+        /* Enhanced mobile consistency */
+        border: 2px solid var(--border-color) !important;
+        background-color: var(--bot-message-bg) !important;
+        color: var(--text-color) !important;
+        /* Ensure consistent touch interactions */
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.1);
+        touch-action: manipulation;
+        /* Better mobile performance */
+        transform: translateZ(0);
+        will-change: border-color, box-shadow, transform;
+        /* Box sizing consistency */
+        box-sizing: border-box !important;
+        /* Remove any default mobile styling */
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        appearance: none;
+        outline: none !important;
+    }
+    
+    .chat-input:focus {
+        border-color: var(--accent-color) !important;
+        box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2) !important;
+        transform: translateZ(0) scale(1.01) !important;
+    }
+    
+    .send-button {
+        position: absolute !important;
+        right: 6px !important; /* Closer to edge for better mobile design */
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        width: 38px !important; /* Smaller size for mobile */
+        height: 38px !important;
+        background-color: var(--accent-color) !important;
+        border: none !important;
+        border-radius: 50% !important;
+        color: #ffffff !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 2px 8px rgba(167, 139, 250, 0.3) !important; /* Subtle shadow */
+        z-index: 102 !important; /* Higher than input */
+        padding: 0 !important;
+        margin: 0 !important;
+        /* Ensure proper containment */
+        max-width: 38px !important;
+        max-height: 38px !important;
+        box-sizing: border-box !important;
+        /* Enhanced mobile touch target */
+        min-width: 38px;
+        min-height: 38px;
+        -webkit-tap-highlight-color: rgba(255, 255, 255, 0.2);
+    }
+    
+    .send-button:hover:not(:disabled) {
+        background-color: var(--accent-hover-color) !important;
+        transform: translateY(-50%) scale(1.1) !important; /* Slightly more pronounced for smaller button */
+        box-shadow: 0 3px 12px rgba(167, 139, 250, 0.4) !important;
+    }
+    
+    .send-button:active:not(:disabled) {
+        background-color: var(--accent-hover-color) !important;
+        transform: translateY(-50%) scale(0.9) !important; /* More pronounced active state */
+        transition: all 0.1s ease !important;
+    }
+    
+    .send-button svg {
+        width: 18px !important; /* Smaller icon for mobile */
+        height: 18px !important;
+        color: #ffffff !important;
+        fill: none !important;
+        stroke: currentColor !important;
+        stroke-width: 2.5 !important; /* Slightly thicker for better visibility */
+    }
+    
+    .chip-toggle-button {
+        position: absolute !important;
+        left: 6px !important; /* Closer to edge for better mobile design */
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        width: 34px !important; /* Smaller size for mobile */
+        height: 34px !important;
+        background-color: transparent !important;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 50% !important;
+        color: var(--text-muted-color) !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        transition: all 0.2s ease !important;
+        z-index: 102 !important; /* Higher than input */
+        padding: 0 !important;
+        margin: 0 !important;
+        /* Ensure proper containment */
+        max-width: 34px !important;
+        max-height: 34px !important;
+        box-sizing: border-box !important;
+        /* Enhanced mobile touch target */
+        min-width: 34px;
+        min-height: 34px;
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.2);
+        font-size: 14px !important; /* Smaller emoji */
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important; /* Subtle shadow */
+    }
+    
+    .chip-toggle-button:hover {
+        background-color: var(--chip-hover-bg) !important;
+        color: var(--accent-color) !important;
+        border-color: var(--accent-color) !important;
+        transform: translateY(-50%) scale(1.05) !important;
+        box-shadow: 0 2px 6px rgba(167, 139, 250, 0.25) !important; /* Subtle hover effect */
+    }
+    
+    .chip-toggle-button:active {
+        background-color: var(--chip-hover-bg) !important;
+        transform: translateY(-50%) scale(0.95) !important;
+        transition: all 0.1s ease !important;
+    }
+    
+    /* Landing page suggestion chips optimization for mobile */
+    .suggestion-chips-container {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 1.5rem;
+        justify-items: stretch;
+        /* Enhanced mobile width handling */
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+    
+    .suggestion-chip {
+        padding: 12px 8px;
+        font-size: 0.85rem;
+        border-radius: 12px;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .chat-suggestion-chips {
+        padding-bottom: 8px;
+        gap: 8px;
+    }
+}
+
+/* Medium devices (tablets, 768px and down) */
+@media (max-width: 768px) and (min-width: 601px) {
     .landing-container { 
         gap: 1.5rem; 
         padding: 1rem; 
     }
     
     .logo { 
-        max-width: 180px; 
+        max-width: 200px; 
     }
     
     .message-wrapper { 
-        max-width: 95%; 
+        max-width: 85%; 
     }
     
     .chat-header { 
@@ -517,7 +950,506 @@ body {
     }
     
     .input-area-container { 
-        padding: 0.75rem; 
+        padding: 1rem; 
+    }
+    
+    .chat-input {
+        font-size: 16px; /* Prevents zoom on iOS */
+    }
+}
+
+/* Touch device optimizations */
+@media (hover: none) and (pointer: coarse) {
+    /* Enhanced touch targets */
+    * {
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.2);
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+    
+    /* Allow text selection for message content */
+    .message-bubble {
+        -webkit-user-select: text;
+        user-select: text;
+    }
+    
+    /* Input field should be selectable */
+    .chat-input, .landing-input {
+        -webkit-user-select: text;
+        user-select: text;
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.3);
+    }
+    
+    /* Suggestion chips optimized for touch */
+    .suggestion-chip {
+        min-height: 44px; /* WCAG minimum touch target */
+        min-width: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px 18px;
+        transition: all 0.2s ease;
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.2);
+    }
+    
+    .suggestion-chip:hover {
+        /* Remove hover effects on touch devices */
+        background: var(--chip-bg);
+        border-color: var(--border-color);
+        transform: none;
+    }
+    
+    .suggestion-chip:active {
+        background: var(--chip-hover-bg);
+        transform: scale(0.95);
+        transition: all 0.1s ease;
+    }
+    
+    /* Send button optimized for touch */
+    .send-button {
+        min-width: 44px;
+        min-height: 44px;
+        -webkit-tap-highlight-color: rgba(255, 255, 255, 0.2);
+    }
+    
+    .send-button:hover {
+        /* Remove hover effects, keep active states */
+        background-color: var(--accent-color);
+        transform: translateY(-50%);
+        box-shadow: 0 2px 12px rgba(167, 139, 250, 0.4);
+    }
+    
+    .send-button:active:not(:disabled) {
+        background-color: var(--accent-hover-color);
+        transform: translateY(-50%) scale(0.9);
+        transition: all 0.1s ease;
+    }
+    
+    /* Toggle button enhanced for touch */
+    .chip-toggle-button {
+        min-width: 44px;
+        min-height: 44px;
+        -webkit-tap-highlight-color: rgba(167, 139, 250, 0.2);
+    }
+    
+    .chip-toggle-button:active {
+        background-color: var(--chip-hover-bg);
+        transform: translateY(-50%) scale(0.95);
+        transition: all 0.1s ease;
+    }
+    
+    /* Message bubbles touch optimization */
+    .message-wrapper {
+        transition: transform 0.2s ease;
+    }
+    
+    /* Enhanced scrolling for touch */
+    .chat-messages {
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
+    }
+    
+    .chat-suggestion-chips {
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
+    }
+    
+    /* Form elements touch optimization */
+    button, input, textarea, select {
+        -webkit-appearance: none;
+        appearance: none;
+        border-radius: 8px;
+    }
+    
+    /* Prevent text selection on buttons */
+    button {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    
+    /* Enhanced mobile performance optimizations */
+    .chat-container, .landing-container {
+        transform: translateZ(0); /* Force hardware acceleration */
+        -webkit-backface-visibility: hidden;
+        backface-visibility: hidden;
+        /* Improve scroll performance */
+        contain: layout style paint;
+        /* Optimize repaints */
+        isolation: isolate;
+    }
+    
+    /* Smooth animations for mobile */
+    .message-wrapper {
+        will-change: transform, opacity;
+        contain: layout style paint;
+        transform: translateZ(0);
+    }
+    
+    .suggestion-chip, .send-button, .chip-toggle-button {
+        will-change: transform, background-color;
+        transform: translateZ(0);
+        /* Reduce layout thrashing */
+        contain: layout style;
+    }
+    
+    /* Enhanced mobile input performance */
+    .chat-input, .landing-input {
+        contain: layout style;
+        transform: translateZ(0);
+        will-change: border-color, box-shadow, transform;
+        /* Smooth keyboard transitions */
+        transition: border-color 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+                    box-shadow 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+                    transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    }
+    
+    /* Keyboard transition performance */
+    .chat-container.mobile {
+        /* Prepare for keyboard transitions */
+        transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        will-change: height;
+    }
+    
+    .chat-container.mobile .input-area-container {
+        /* Smooth fixed positioning transitions */
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        will-change: transform, position, bottom;
+        transform: translateZ(0);
+    }
+    
+    .chat-container.mobile .chat-messages {
+        /* Optimize scrolling during keyboard transitions */
+        transition: padding-bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        will-change: padding-bottom, height;
+        transform: translateZ(0);
+        contain: layout style paint;
+    }
+    
+    /* Enhanced mobile touch feedback */
+    .suggestion-chip:active {
+        background: var(--chip-hover-bg) !important;
+        transform: scale(0.95) translateZ(0) !important;
+        transition: all 0.1s ease !important;
+    }
+    
+    /* Optimize scroll performance */
+    .chat-messages, .chat-suggestion-chips, .suggestion-chips-container {
+        contain: layout style paint;
+        transform: translateZ(0);
+    }
+    
+    /* Better mobile input handling */
+    .landing-input, .chat-input {
+        -webkit-appearance: none;
+        appearance: none;
+        transform: translateZ(0);
+    }
+    
+    /* Prevent scroll issues on mobile */
+    .chat-container.mobile.keyboard-open {
+        overflow: hidden;
+    }
+    
+    .landing-container.mobile.keyboard-open {
+        overflow: hidden;
+    }
+}
+
+/* Enhanced Mobile keyboard handling */
+.chat-container.mobile {
+    position: relative;
+    overflow: hidden;
+    /* Support for modern viewport units */
+    height: 100vh;
+    height: 100dvh; /* Dynamic viewport height */
+    height: 100svh; /* Small viewport height for stable UI */
+    /* Enhanced overflow and width controls (consistent with landing page) */
+    overflow-x: hidden;
+    max-width: 100vw;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.chat-container.mobile.keyboard-open {
+    /* Enhanced keyboard state with better viewport handling */
+    height: 100vh;
+    height: 100dvh;
+    position: relative;
+    overflow: hidden;
+    /* Enhanced overflow controls */
+    overflow-x: hidden;
+    max-width: 100vw;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.chat-container.mobile.keyboard-open .input-area-container {
+    position: fixed !important;
+    /* Dynamic bottom positioning using CSS custom properties */
+    bottom: var(--input-bottom-offset, 0px) !important;
+    bottom: max(var(--input-bottom-offset, 0px), env(safe-area-inset-bottom)) !important;
+    left: 0;
+    left: max(0px, env(safe-area-inset-left, 0px));
+    right: 0;
+    right: max(0px, env(safe-area-inset-right, 0px));
+    z-index: 1000;
+    background-color: var(--chat-bg);
+    /* Enhanced keyboard separator with gradient effect */
+    border-top: 3px solid var(--accent-color);
+    background-image: linear-gradient(to bottom, 
+                                    rgba(167, 139, 250, 0.1) 0%, 
+                                    transparent 20%);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.2), 
+                0 -2px 12px rgba(167, 139, 250, 0.25),
+                0 -1px 4px rgba(167, 139, 250, 0.4); /* Triple shadow for depth */
+    /* Enhanced styling for better visibility */
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    padding: 0.75rem;
+    margin: 0;
+    /* Enhanced width calculation to prevent overflow (same as landing page) */
+    width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px)));
+    max-width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px)));
+    /* Ensure proper box sizing */
+    box-sizing: border-box;
+    /* Prevent any overflow */
+    overflow: hidden;
+    /* Enhanced smooth transitions with dynamic positioning */
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.4s ease,
+                background-color 0.4s ease,
+                border-top-color 0.3s ease,
+                bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Hardware acceleration */
+    transform: translateZ(0);
+    will-change: transform, box-shadow, border-top-color, bottom;
+}
+
+.chat-container.mobile.keyboard-open .chat-messages {
+    padding-bottom: 100px; /* Enhanced space for fixed input */
+    height: calc(100vh - 160px);
+    height: calc(100dvh - 160px);
+    max-height: calc(100vh - 160px);
+    max-height: calc(100dvh - 160px);
+    /* Enhanced scrolling */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+    /* Performance optimization */
+    contain: layout style paint;
+    transform: translateZ(0);
+    /* Enhanced visual separation from keyboard area */
+    position: relative;
+    /* Subtle shadow at bottom to indicate separation */
+    box-shadow: inset 0 -2px 4px rgba(0, 0, 0, 0.05);
+    /* Ensure proper z-index hierarchy */
+    z-index: 1;
+}
+
+/* Enhanced smooth transitions for keyboard state changes */
+.chat-container.mobile .input-area-container {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                border-top-color 0.3s ease,
+                box-shadow 0.4s ease;
+    /* Default state - subtle border */
+    border-top: 1px solid var(--border-color);
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.chat-container.mobile .chat-messages {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                padding-bottom 0.4s ease;
+}
+
+/* Enhanced mobile transitions */
+.landing-container.mobile .new-input-area {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.landing-container.mobile .suggestion-chips-container {
+    transition: opacity 0.2s ease, transform 0.3s ease;
+}
+
+.landing-container.mobile.keyboard-open .suggestion-chips-container {
+    opacity: 0.7;
+    transform: scale(0.95);
+}
+
+/* View transitions */
+.view {
+    transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.view.hidden {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+    pointer-events: none;
+}
+
+/* Enhanced mobile input positioning */
+@media (max-width: 600px) {
+    .chat-container.mobile.keyboard-open .input-area-container {
+        padding: 0.75rem;
+        background: var(--chat-bg);
+        backdrop-filter: blur(10px);
+    }
+    
+    .chat-container.mobile.keyboard-open .input-content-wrapper {
+        max-width: 100%;
+        width: 100%;
+        box-sizing: border-box;
+        position: relative;
+    }
+    
+    .chat-container.mobile.keyboard-open .chat-input-wrapper {
+        position: relative;
+        display: flex;
+        align-items: center;
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    
+    .chat-container.mobile.keyboard-open .chat-input {
+        height: 50px !important;
+        font-size: 16px !important; /* Prevents zoom on iOS */
+        padding: 12px 50px 12px 46px !important; /* Adjusted for smaller buttons */
+        border-radius: 25px !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        border: 2px solid var(--accent-color) !important; /* Highlighted when keyboard open */
+        box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2) !important;
+        background-color: var(--bot-message-bg) !important;
+        color: var(--text-color) !important;
+        outline: none !important;
+        z-index: 1 !important;
+    }
+    
+    .chat-container.mobile.keyboard-open .send-button {
+        position: absolute !important;
+        right: 6px !important; /* Closer to edge */
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        width: 38px !important; /* Smaller for keyboard state */
+        height: 38px !important;
+        background-color: var(--accent-color) !important;
+        border: none !important;
+        border-radius: 50% !important;
+        color: #ffffff !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-shadow: 0 2px 8px rgba(167, 139, 250, 0.3) !important; /* Subtle shadow */
+        z-index: 103 !important; /* Higher than input */
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 38px !important;
+        max-height: 38px !important;
+        box-sizing: border-box !important;
+    }
+    
+    .chat-container.mobile.keyboard-open .chip-toggle-button {
+        position: absolute !important;
+        left: 6px !important; /* Closer to edge */
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        width: 34px !important; /* Smaller for keyboard state */
+        height: 34px !important;
+        background-color: transparent !important;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 50% !important;
+        color: var(--text-muted-color) !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        z-index: 103 !important; /* Higher than input */
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 34px !important;
+        max-height: 34px !important;
+        box-sizing: border-box !important;
+        font-size: 14px !important; /* Smaller emoji */
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    }
+    
+    /* Ensure the input container is always visible and properly styled with dynamic positioning */
+    .chat-container.mobile.keyboard-open .input-area-container {
+        position: fixed !important;
+        /* Dynamic positioning above keyboard using CSS custom properties */
+        bottom: var(--input-bottom-offset, 0px) !important;
+        bottom: max(var(--input-bottom-offset, 0px), env(safe-area-inset-bottom)) !important;
+        left: 0;
+        left: max(0px, env(safe-area-inset-left, 0px)) !important;
+        right: 0;
+        right: max(0px, env(safe-area-inset-right, 0px)) !important;
+        /* Enhanced keyboard separator styling */
+        border-top: 3px solid var(--accent-color) !important; /* Prominent separator line */
+        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15), 
+                    0 -2px 8px rgba(167, 139, 250, 0.2) !important; /* Layered shadow effect */
+        /* Dynamic positioning transition */
+        transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        z-index: 1001 !important;
+        padding: 0.75rem;
+        background: var(--chat-bg) !important;
+        backdrop-filter: blur(10px);
+        border-top: 2px solid var(--border-color);
+        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3) !important;
+        /* Enhanced width calculation to prevent overflow (consistent with landing page) */
+        width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px))) !important;
+        max-width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px))) !important;
+        /* Ensure proper box sizing */
+        box-sizing: border-box !important;
+        /* Prevent any overflow */
+        overflow: hidden !important;
+    }
+    
+    /* Better chat area height management */
+    .chat-container.mobile .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    /* When keyboard is open on mobile, ensure proper scrolling */
+    .chat-container.mobile.keyboard-open {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .chat-container.mobile.keyboard-open .chat-header {
+        flex-shrink: 0;
+    }
+}
+
+/* Landscape orientation adjustments */
+@media (max-width: 768px) and (orientation: landscape) {
+    .chat-messages {
+        padding: 0.5rem;
+    }
+    
+    .input-area-container {
+        padding: 0.5rem 0.75rem;
+    }
+    
+    .message-wrapper {
+        margin-bottom: 1rem;
+    }
+    
+    /* Keyboard handling in landscape */
+    .chat-container.mobile.keyboard-open .chat-messages {
+        padding-bottom: 70px;
+        max-height: calc(100vh - 120px);
+        max-height: calc(100dvh - 120px);
+    }
+    
+    .chat-container.mobile.keyboard-open .input-area-container {
+        padding: 0.5rem 0.75rem;
     }
 }
 
@@ -722,13 +1654,52 @@ body {
     .hr-dashboard {
         width: 100vw;
         left: 0;
+        padding: 16px;
     }
     
     .dashboard-toggle {
         top: 15px;
         right: 15px;
-        width: 45px;
-        height: 45px;
+        width: 48px;
+        height: 48px;
         font-size: 18px;
+    }
+    
+    .dashboard-grid {
+        gap: 16px;
+    }
+    
+    .dashboard-card {
+        padding: 16px;
+    }
+    
+    .summary-stats {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+}
+
+/* Small mobile adjustments for dashboard */
+@media (max-width: 600px) {
+    .dashboard-toggle {
+        width: 44px;
+        height: 44px;
+        top: 12px;
+        right: 12px;
+        font-size: 16px;
+    }
+    
+    .hr-dashboard {
+        padding: 12px;
+    }
+    
+    .dashboard-header h2 {
+        font-size: 1.3rem;
+    }
+    
+    .refresh-button {
+        padding: 6px 12px;
+        font-size: 13px;
     }
 }

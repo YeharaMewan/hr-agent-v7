@@ -304,6 +304,33 @@ class EmployeeUpdateFormRequest(BaseModel):
     form_data: dict  # Form configuration with current values
     follow_up_questions: List[str] = []
 
+class SimilarEmployeesFoundResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "similar_employees_found"
+    searched_name: str
+    data: List[dict]  # Similar employees data
+    total_found: int
+    follow_up_questions: List[str] = []
+
+class SimilarEmployeeFoundForUpdateResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "similar_employee_found_for_update"
+    searched_name: str
+    suggested_employee: dict  # Best match employee data
+    all_similar: List[dict]  # All similar employees
+    follow_up_questions: List[str] = []
+
+class HumanLoopQuestionResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "human_loop_question"
+    conversation_state: dict  # Track what action to take on confirmation
+    follow_up_questions: List[str] = []
+    pending_action: str  # "create_employee", "update_employee", etc.
+    suggested_data: Optional[dict] = None  # Data to use when confirmed
+
 class FormDataResponse(BaseModel):
     success: bool = True
     message: str
@@ -323,6 +350,22 @@ class AttendanceStatistics(BaseModel):
 # Chat Models
 class ChatMessage(BaseModel):
     message: str
+
+# Form-based Employee Management Models
+class EmployeeCreateRequest(BaseModel):
+    query: str = ""
+    name: str
+    email: str
+    role: str
+    department: str
+    phone_number: Optional[str] = ""
+    address: Optional[str] = ""
+
+class EmployeeUpdateRequest(BaseModel):
+    query: str = ""
+    employee_identifier: str
+    field_updates: dict[str, Any]
+    update_reason: str = ""
 
 class ChatResponse(BaseModel):
     type: str
