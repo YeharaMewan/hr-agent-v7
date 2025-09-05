@@ -288,12 +288,6 @@ class EmployeeUpdatedResponse(BaseModel):
     update_reason: Optional[str] = None
     follow_up_questions: List[str] = []
 
-class EmployeeNotFoundCreateOffer(BaseModel):
-    success: bool = True
-    message: str
-    response_type: str = "employee_not_found_create_offer"
-    suggested_name: str = ""
-    follow_up_questions: List[str] = []
 
 class EmployeeUpdateFormRequest(BaseModel):
     success: bool = True
@@ -402,3 +396,233 @@ class EmployeeQuery(BaseModel):
     department: Optional[str] = None
     role: Optional[EmployeeRole] = None
     is_active: Optional[bool] = None
+
+# Enhanced Task Query and Response Models
+class TaskTimeFilter(str, Enum):
+    TODAY = "today"
+    YESTERDAY = "yesterday"
+    THIS_WEEK = "this_week"
+    LAST_WEEK = "last_week"
+    THIS_MONTH = "this_month"
+    LAST_MONTH = "last_month"
+    LAST_3_MONTHS = "last_3_months"
+    LAST_6_MONTHS = "last_6_months"
+    THIS_YEAR = "this_year"
+    CUSTOM = "custom"
+
+class TaskWithFullDetails(Task):
+    group_name: Optional[str] = None
+    leader_names: List[str] = []
+    leader_departments: List[str] = []
+    labour_names: List[str] = []
+    labour_skills: List[str] = []
+    department_names: List[str] = []
+
+class TaskQueryResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Any] = None
+    response_type: str  # "individual_task", "task_group_summary", "all_tasks_summary", "small_group", etc.
+    total_found: int
+    follow_up_questions: List[str] = []
+    time_period: Optional[str] = None
+    filters_applied: dict = {}
+
+class TaskGroupSummaryResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Task group data with task counts and priorities
+    total_tasks: int
+    total_groups: int
+    response_type: str = "task_group_summary"
+    follow_up_questions: List[str] = []
+    time_period: Optional[str] = None
+
+class IndividualTaskResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Complete task details
+    response_type: str = "individual_task"
+    search_type: Optional[str] = None  # "id", "title", "priority"
+    follow_up_questions: List[str] = []
+
+class TaskSummaryData(BaseModel):
+    group_name: str
+    tasks: List[dict]
+    priority_breakdown: dict
+    leader_info: List[dict]
+
+class MultipleTasksResponse(BaseModel):
+    success: bool
+    message: str
+    data: List[dict]  # List of matching tasks
+    response_type: str = "multiple_tasks"
+    total_found: int
+    follow_up_questions: List[str] = []
+    time_period: Optional[str] = None
+    filters_applied: dict = {}
+
+class TaskStatisticsResponse(BaseModel):
+    success: bool
+    message: str
+    response_type: str = "task_statistics"
+    data: dict  # Contains statistics breakdown
+    time_period: Optional[str] = None
+    total_tasks: int
+    priority_breakdown: dict
+    completion_trends: dict
+    follow_up_questions: List[str] = []
+
+class TaskNotFoundResponse(BaseModel):
+    success: bool = False
+    message: str
+    response_type: str = "task_not_found"
+    suggestions: List[str] = []
+    follow_up_questions: List[str] = []
+    alternative_queries: List[str] = []
+
+class TaskHumanLoopQuestionResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "task_human_loop_question"
+    conversation_state: dict  # Track what action to take on confirmation
+    follow_up_questions: List[str] = []
+    pending_action: str  # "filter_tasks", "show_details", etc.
+    suggested_filters: Optional[dict] = None
+
+# Enhanced Task Query Models
+class TaskIntelligentQuery(BaseModel):
+    query: str
+    time_filter: Optional[TaskTimeFilter] = None
+    priority_filter: Optional[List[TaskPriority]] = None
+    leader_names: Optional[List[str]] = None
+    labour_skills: Optional[List[str]] = None
+    departments: Optional[List[str]] = None
+    locations: Optional[List[str]] = None
+    include_completed: bool = True
+    limit: Optional[int] = None
+
+# Enhanced Labour Query and Response Models
+class LabourWorkloadStatus(str, Enum):
+    AVAILABLE = "available"
+    LIGHT_LOAD = "light_load"
+    MODERATE_LOAD = "moderate_load"
+    HEAVY_LOAD = "heavy_load"
+    OVERLOADED = "overloaded"
+
+class LabourWithFullDetails(Labour):
+    current_task_count: int = 0
+    current_tasks: List[str] = []
+    task_groups: List[str] = []
+    working_under_leaders: List[str] = []
+    leader_departments: List[str] = []
+    workload_status: Optional[LabourWorkloadStatus] = None
+    recent_task_history: List[dict] = []
+    skill_utilization: Optional[float] = None
+
+class LabourQueryResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Any] = None
+    response_type: str  # "individual_labour", "skill_group", "workload_analysis", "multiple_labourers", etc.
+    total_found: int
+    follow_up_questions: List[str] = []
+    time_period: Optional[str] = None
+    filters_applied: dict = {}
+
+class IndividualLabourResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Complete labour profile with task assignments
+    response_type: str = "individual_labour"
+    search_type: Optional[str] = None  # "name", "skill", "id"
+    follow_up_questions: List[str] = []
+    workload_analysis: dict = {}
+
+class LabourSkillGroupResponse(BaseModel):
+    success: bool
+    message: str
+    data: List[dict]  # Labour grouped by skills
+    response_type: str = "skill_group"
+    skill_name: str
+    total_found: int
+    workload_distribution: dict = {}
+    follow_up_questions: List[str] = []
+
+class LabourWorkloadAnalysisResponse(BaseModel):
+    success: bool
+    message: str
+    data: dict  # Workload statistics and analysis
+    response_type: str = "workload_analysis"
+    total_labourers: int
+    workload_breakdown: dict  # available, light, moderate, heavy, overloaded counts
+    skill_distribution: dict
+    recommendations: List[str] = []
+    follow_up_questions: List[str] = []
+
+class MultipleLabourersResponse(BaseModel):
+    success: bool
+    message: str
+    data: List[dict]  # List of matching labourers
+    response_type: str = "multiple_labourers"
+    total_found: int
+    skill_breakdown: dict = {}
+    workload_summary: dict = {}
+    follow_up_questions: List[str] = []
+    time_period: Optional[str] = None
+    filters_applied: dict = {}
+
+class LabourStatisticsResponse(BaseModel):
+    success: bool
+    message: str
+    response_type: str = "labour_statistics"
+    data: dict  # Contains statistics breakdown
+    time_period: Optional[str] = None
+    total_labourers: int
+    skill_breakdown: dict
+    workload_trends: dict
+    task_assignment_patterns: dict
+    follow_up_questions: List[str] = []
+
+class LabourNotFoundResponse(BaseModel):
+    success: bool = False
+    message: str
+    response_type: str = "labour_not_found"
+    suggestions: List[str] = []
+    follow_up_questions: List[str] = []
+    alternative_queries: List[str] = []
+    similar_skills: List[str] = []
+
+class LabourHumanLoopQuestionResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "labour_human_loop_question"
+    conversation_state: dict  # Track what action to take on confirmation
+    follow_up_questions: List[str] = []
+    pending_action: str  # "filter_labourers", "show_workload", "assign_tasks", etc.
+    suggested_filters: Optional[dict] = None
+    labour_recommendations: List[str] = []
+
+# Labour Query Models
+class LabourIntelligentQuery(BaseModel):
+    query: str
+    skill_filter: Optional[List[str]] = None
+    workload_filter: Optional[List[LabourWorkloadStatus]] = None
+    labour_names: Optional[List[str]] = None
+    task_types: Optional[List[str]] = None
+    leader_names: Optional[List[str]] = None
+    departments: Optional[List[str]] = None
+    time_filter: Optional[TaskTimeFilter] = None
+    include_task_history: bool = True
+    include_workload_analysis: bool = True
+    limit: Optional[int] = None
+
+class LabourTaskAssignmentSummary(BaseModel):
+    labour_id: int
+    labour_name: str
+    skill: str
+    assigned_tasks: List[dict]
+    task_count: int
+    workload_status: LabourWorkloadStatus
+    average_task_priority: Optional[str] = None
+    leader_relationships: List[str] = []

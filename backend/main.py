@@ -133,7 +133,13 @@ from database import execute_query, get_db_connection, search_similar_documents
 from models import (
     Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
     Attendance, AttendanceCreate, AttendanceQuery,
-    Task, TaskCreate, TaskWithDetails, TaskQuery,
+    Task, TaskCreate, TaskWithDetails, TaskQuery, TaskTimeFilter, TaskWithFullDetails,
+    TaskQueryResponse, TaskIntelligentQuery, MultipleTasksResponse, TaskStatisticsResponse,
+    TaskNotFoundResponse, TaskHumanLoopQuestionResponse, IndividualTaskResponse,
+    Labour, LabourWithFullDetails, LabourWorkloadStatus, LabourQueryResponse, LabourIntelligentQuery,
+    IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
+    MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
+    LabourTaskAssignmentSummary,
     Department, ChatMessage, APIResponse, AttendanceStatistics,
     EmployeeCreateRequest, EmployeeUpdateRequest
 )
@@ -178,31 +184,27 @@ except Exception as e:
 @tool
 def query_employee_details_intelligent(query: str) -> Dict[str, Any]:
     """
-    Intelligent employee query tool that understands natural language requests about employees.
+    PRIMARY EMPLOYEE QUERY TOOL: Use for ALL conversational employee queries with human-in-the-loop confirmation.
     
-    Handles queries like:
+    🎯 USE THIS TOOL FOR ALL THESE QUERIES:
+    - "do you know [NAME]" / "know [NAME]" 
+    - "tell me about [NAME]" / "[NAME] information"
+    - "give me [NAME] details" / "show me [NAME]"
+    - "find employee [NAME]" / "who is [NAME]"
+    - "[NAME] details" / "[NAME] profile"
     - "AI department employees" / "show me marketing team"
-    - "give me Simon details" / "John's information"
     - "employees who are leaders" / "all HR staff"
-    - "leaders in AI department" / "employees working in ramstudios"
     - "all employees" / "show me everyone"
     
-    Uses smart response patterns:
-    - Individual queries (1 person): Full details immediately
-    - Small groups (2-10): Show basic details, offer more info
-    - Large groups (>10): Summary first, then ask for specifics
-    - Department queries: Names first, then ask for individual details
+    ✅ This tool provides human-in-the-loop confirmation before showing details.
+    ⚠️ This tool ONLY shows employee information. It NEVER opens forms or triggers updates.
     
-    Parameters:
-    - query: Natural language query about employees
+    Do NOT use for:
+    - "update [NAME] details" (use update_employee_intelligent instead)
+    - "change [NAME]" (use update_employee_intelligent instead) 
+    - "modify [NAME]" (use update_employee_intelligent instead)
     
-    Returns:
-    - success: bool
-    - message: Human-readable summary
-    - data: Employee data (varies based on query type)
-    - response_type: "individual", "small_group", "summary", "department_list"
-    - follow_up_questions: Suggested next actions
-    - total_found: Number of employees found
+    Returns employee details for viewing only - no forms will be triggered.
     """
     try:
         import re
@@ -215,147 +217,345 @@ def query_employee_details_intelligent(query: str) -> Dict[str, Any]:
         
         query_lower = query.lower().strip()
         
-        # Detect query intent
-        if any(phrase in query_lower for phrase in ['all employee', 'everyone', 'show me all', 'entire company']):
+        # Detect query intent - PRIORITIZE individual employee queries
+        # First check if it's a simple name pattern (1-3 words that look like names)
+        simple_name_pattern = r'^([A-Za-z]{2,20}(?:\s+[A-Za-z]{2,20}){0,2})$'
+        simple_name_match = re.match(simple_name_pattern, query.strip())
+        
+        if simple_name_match:
+            # This looks like a simple name query
+            query_type = "individual"
+        elif any(phrase in query_lower for phrase in ['all employee', 'everyone', 'show me all', 'entire company']):
             query_type = "all_employees"
-        elif any(phrase in query_lower for phrase in ['details', 'information', 'info about', 'give me']) and not any(dept in query_lower for dept in ['department', 'team']):
+        elif any(phrase in query_lower for phrase in [
+            # Information/details queries
+            'details', 'information', 'info about', 'give me',
+            # Knowledge-based queries  
+            'do you know', 'know', 'familiar with', 'heard of',
+            # Existence queries
+            'who is', 'is there', 'does', 'work here',
+            # Question words
+            'tell me about', 'show me', 'find'
+        ]) and not any(dept in query_lower for dept in ['department', 'team']):
             query_type = "individual"
         elif any(phrase in query_lower for phrase in ['department', 'team', 'dept']):
-            query_type = "department"
+            query_type = "department" 
+        elif any(phrase in query_lower for phrase in ['ai', 'marketing', 'hr', 'finance']):
+            query_type = "department"  # Department names
         elif any(phrase in query_lower for phrase in ['leader', 'hr', 'employee', 'staff']):
             query_type = "role"
         
-        # Extract department information
-        dept_patterns = {
-            'ai': ['ai', 'artificial intelligence', 'rise ai'],
-            'marketing': ['marketing', 'marketing team'],
-            'hr': ['hr', 'human resources', 'hr team'],
-            'finance': ['finance', 'accounting', 'finance team'],
-            'operations': ['operations', 'ops', 'operations team'],
-            'tech': ['tech', 'technology', 'tech team'],
-            'ramstudios': ['ramstudios', 'ram studios']
-        }
+        # Extract department information - BUT NOT for individual employee queries
+        if query_type != "individual":  # Only extract department info for non-individual queries
+            dept_patterns = {
+                'ai': ['ai', 'artificial intelligence', 'rise ai'],
+                'marketing': ['marketing', 'marketing team'],
+                'hr': ['hr', 'human resources', 'hr team'],
+                'finance': ['finance', 'accounting', 'finance team'],
+                'operations': ['operations', 'ops', 'operations team'],
+                'tech': ['tech', 'technology', 'tech team'],
+                'ramstudios': ['ramstudios', 'ram studios']
+            }
+            
+            for dept_key, patterns in dept_patterns.items():
+                if any(pattern in query_lower for pattern in patterns):
+                    department = dept_key
+                    break
         
-        for dept_key, patterns in dept_patterns.items():
-            if any(pattern in query_lower for pattern in patterns):
-                department = dept_key
-                break
+        # Extract role information - BUT NOT for individual employee queries
+        if query_type != "individual":  # Only extract role info for non-individual queries
+            role_patterns = {
+                'leader': ['leader', 'leaders', 'lead', 'manager', 'head'],
+                'hr': ['hr staff', 'hr employee', 'hr person'],
+                'employee': ['employee', 'staff member', 'worker'],
+                'labourer': ['labourer', 'labor', 'worker']
+            }
+            
+            for role_key, patterns in role_patterns.items():
+                if any(pattern in query_lower for pattern in patterns):
+                    role = role_key
+                    break
         
-        # Extract role information
-        role_patterns = {
-            'leader': ['leader', 'leaders', 'lead', 'manager', 'head'],
-            'hr': ['hr staff', 'hr employee', 'hr person'],
-            'employee': ['employee', 'staff member', 'worker'],
-            'labourer': ['labourer', 'labor', 'worker']
-        }
-        
-        for role_key, patterns in role_patterns.items():
-            if any(pattern in query_lower for pattern in patterns):
-                role = role_key
-                break
-        
-        # Extract individual employee name
+        # Extract individual employee name with improved patterns and normalization
         name_patterns = [
-            r'(?:details|information|info)\s+(?:for|about|of)?\s*([A-Za-z\s]+?)(?:\s|$)',
-            r'give\s+me\s+([A-Za-z\s]+?)(?:\s|details|information|$)',
-            r'([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\'s\s+info)',
+            # Knowledge-based query patterns - prioritize these first
+            r'do\s+you\s+know\s+(?:the\s+name\s+of\s+)?([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            r'(?:do\s+you\s+)?know\s+(?:about\s+)?([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            r'familiar\s+with\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            r'heard\s+of\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            r'who\s+is\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            r'does\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)\s+work\s+here',
+            r'is\s+there\s+(?:a|an|someone\s+named\s+)?([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$|\?)',
+            
+            # Direct information query patterns
+            r'give\s+me\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\s*$)',
+            r'show\s+me\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\s*$)', 
+            r'tell\s+me\s+about\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\s*$)',
+            r'find\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s+details|\s+information|\s*$)',
+            
+            # General patterns
+            r'(?:details|information|info)\s+(?:for|about|of)\s+([A-Za-z]+(?:\s+[A-Za-z]+)*?)(?:\s|$)',
+            r'([A-Za-z]+(?:\s+[A-Za-z]+)*?)\s+(?:details|information|info)(?:\s|$)',
+            
+            # Quoted names
             r'"([^"]+)"',
-            r"'([^']+)'"
+            r"'([^']+)'",
+            
+            # NEW: Single name patterns - For simple queries like "kalhara", "simon", etc.
+            r'^([A-Za-z]{2,20})$',  # Single word that looks like a name
+            r'^([A-Za-z]{2,20}\s+[A-Za-z]{2,20})$',  # Two words (first + last name)
+            r'^([A-Za-z]{2,20}\s+[A-Za-z]{2,20}\s+[A-Za-z]{2,20})$',  # Three words (full name)
+            
+            # Fallback - single word or simple names
+            r'\b([A-Za-z]{3,})\b(?=\s+(?:details|information|info)|$)'
         ]
         
+        def normalize_name(name: str) -> str:
+            """Normalize name for consistent matching"""
+            if not name:
+                return ""
+            # Clean up the name: strip whitespace, remove extra spaces
+            cleaned = re.sub(r'\s+', ' ', name.strip())
+            # Title case for consistency (first letter of each word capitalized)
+            normalized = cleaned.title()
+            return normalized
+        
         if query_type == "individual":
-            for pattern in name_patterns:
-                match = re.search(pattern, query, re.IGNORECASE)
-                if match:
-                    potential_name = match.group(1).strip()
-                    # Filter out common words that aren't names
-                    exclude_words = ['details', 'information', 'info', 'employee', 'staff', 'person', 'data', 'profile']
-                    if not any(word in potential_name.lower() for word in exclude_words) and len(potential_name.split()) <= 3:
-                        employee_name = potential_name
-                        break
+            # For simple name queries, try direct extraction first
+            if simple_name_match:
+                # This is a simple name query like "Yehara" or "John Smith"
+                potential_name = simple_name_match.group(1).strip()
+                exclude_words = ['details', 'information', 'info', 'employee', 'staff', 'person', 'data', 'profile', 'all', 'everyone']
+                if not any(word in potential_name.lower() for word in exclude_words):
+                    employee_name = normalize_name(potential_name)
+            
+            # If no name extracted yet, try pattern matching
+            if not employee_name:
+                for pattern in name_patterns:
+                    match = re.search(pattern, query, re.IGNORECASE)
+                    if match:
+                        potential_name = match.group(1).strip()
+                        # Filter out common words that aren't names
+                        exclude_words = ['details', 'information', 'info', 'employee', 'staff', 'person', 'data', 'profile']
+                        if not any(word in potential_name.lower() for word in exclude_words) and len(potential_name.split()) <= 3:
+                            employee_name = normalize_name(potential_name)
+                            break
         
-        # Build SQL query based on detected intent
-        where_conditions = ["e.is_active = true"]
-        params = []
+        # CRITICAL FIX: If we extracted a name but query_type is not individual, force it to individual
+        # This handles cases like simple name queries: "kalhara", "simon", etc.
+        if employee_name and query_type != "individual":
+            # Double-check this looks like a person's name and not a common word
+            potential_name_lower = employee_name.lower()
+            common_non_names = ['all', 'everyone', 'staff', 'team', 'people', 'employees', 'department', 'summary', 'list', 'details', 'information']
+            
+            if not any(word in potential_name_lower for word in common_non_names):
+                query_type = "individual"
+                logger.info(f"DEBUG: Forced query_type to 'individual' because we extracted name: '{employee_name}'")
         
-        if department:
-            where_conditions.append("LOWER(d.name) LIKE %s")
-            params.append(f"%{department}%")
         
-        if role:
-            where_conditions.append("LOWER(e.role) = %s")
-            params.append(role.lower())
+        # Build SQL query based on detected intent - Use exact matching first for individual employee queries
+        results = []
         
-        if employee_name:
-            where_conditions.append("LOWER(e.name) LIKE %s")
-            params.append(f"%{employee_name.lower()}%")
-        
-        # Construct base query
-        base_query = """
-        SELECT 
-            e.id,
-            e.name,
-            e.email,
-            e.role,
-            e.phone_number,
-            e.address,
-            e.is_active,
-            d.name as department_name,
-            d.id as department_id
-        FROM employees e
-        JOIN departments d ON e.department_id = d.id
-        WHERE {where_clause}
-        ORDER BY d.name, e.role, e.name
-        """.format(where_clause=" AND ".join(where_conditions))
-        
-        # Execute query
-        results = execute_query(base_query, tuple(params))
+        if query_type == "individual" and employee_name:
+            # Enhanced multi-approach search for exact matching
+            normalized_search_name = employee_name.strip()
+            results = []
+            
+            logger.info(f"DEBUG: Searching for employee: '{normalized_search_name}'")
+            
+            # Approach 1: Comprehensive exact matching with multiple case variations
+            search_variations = [
+                normalized_search_name,           # As normalized (Title Case)
+                normalized_search_name.lower(),   # lowercase
+                normalized_search_name.upper(),   # UPPERCASE
+                employee_name.strip()             # Original case
+            ]
+            
+            # Remove duplicates while preserving order
+            search_variations = list(dict.fromkeys(search_variations))
+            
+            for search_name in search_variations:
+                if results:  # Stop if we found a match
+                    break
+                    
+                exact_where_conditions = ["e.is_active = true", "LOWER(TRIM(e.name)) = LOWER(TRIM(%s))"]
+                exact_params = [search_name]
+                
+                if department:
+                    exact_where_conditions.append("LOWER(d.name) LIKE %s")
+                    exact_params.append(f"%{department}%")
+                
+                if role:
+                    exact_where_conditions.append("LOWER(e.role) = %s")
+                    exact_params.append(role.lower())
+                
+                exact_query = """
+                SELECT 
+                    e.id,
+                    e.name,
+                    e.email,
+                    e.role,
+                    e.phone_number,
+                    e.address,
+                    e.is_active,
+                    d.name as department_name,
+                    d.id as department_id
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE {where_clause}
+                ORDER BY d.name, e.role, e.name
+                """.format(where_clause=" AND ".join(exact_where_conditions))
+                
+                logger.info(f"DEBUG: Trying exact match for: '{search_name}'")
+                results = execute_query(exact_query, tuple(exact_params))
+            
+            # If no exact match found, try partial matching
+            if not results:
+                partial_where_conditions = ["e.is_active = true", "LOWER(TRIM(e.name)) LIKE LOWER(TRIM(%s))"]
+                partial_params = [f"%{normalized_search_name}%"]
+                
+                # Add department/role filters if specified for partial match
+                if department:
+                    partial_where_conditions.append("LOWER(d.name) LIKE %s")
+                    partial_params.append(f"%{department}%")
+                
+                if role:
+                    partial_where_conditions.append("LOWER(e.role) = %s")
+                    partial_params.append(role.lower())
+                
+                partial_query = """
+                SELECT 
+                    e.id,
+                    e.name,
+                    e.email,
+                    e.role,
+                    e.phone_number,
+                    e.address,
+                    e.is_active,
+                    d.name as department_name,
+                    d.id as department_id
+                FROM employees e
+                JOIN departments d ON e.department_id = d.id
+                WHERE {where_clause}
+                ORDER BY 
+                    CASE WHEN LOWER(TRIM(e.name)) = LOWER(TRIM(%s)) THEN 1 ELSE 2 END,
+                    LENGTH(e.name) ASC
+                """.format(where_clause=" AND ".join(partial_where_conditions))
+                
+                partial_params.append(normalized_search_name)  # For ORDER BY exact match priority
+                results = execute_query(partial_query, tuple(partial_params))
+        else:
+            # For non-individual queries, use the original logic
+            where_conditions = ["e.is_active = true"]
+            params = []
+            
+            if department:
+                where_conditions.append("LOWER(d.name) LIKE %s")
+                params.append(f"%{department}%")
+            
+            if role:
+                where_conditions.append("LOWER(e.role) = %s")
+                params.append(role.lower())
+            
+            if employee_name:
+                where_conditions.append("LOWER(e.name) LIKE %s")
+                params.append(f"%{employee_name.lower()}%")
+            
+            # Construct base query
+            base_query = """
+            SELECT 
+                e.id,
+                e.name,
+                e.email,
+                e.role,
+                e.phone_number,
+                e.address,
+                e.is_active,
+                d.name as department_name,
+                d.id as department_id
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            WHERE {where_clause}
+            ORDER BY d.name, e.role, e.name
+            """.format(where_clause=" AND ".join(where_conditions))
+            
+            # Execute query
+            results = execute_query(base_query, tuple(params))
         
         if not results:
-            # If this was an individual name search and no results found, check for similar names and offer to create
+            # If this was an individual name search and no results found, show similar names but don't offer to create
             if query_type == "individual" and employee_name:
-                similar_employees = _find_similar_employees(employee_name, threshold=0.6)
+                logger.info(f"DEBUG: No exact matches found for '{employee_name}', checking similar names...")
+                # Use lower threshold for lookup queries to find similar names
+                similar_employees = _find_similar_employees(employee_name, threshold=0.4)
                 
                 if similar_employees:
-                    # Found similar employees - ask human loop question
+                    # Check if the best match is very close (possible exact match missed)
                     best_match = similar_employees[0]
-                    similar_names = [f"{emp['name']} ({emp['department_name']} - {emp['role']})" for emp in similar_employees]
+                    similarity_score = best_match.get('similarity_score', 0)
                     
-                    return {
-                        "success": True,
-                        "message": f"Employee '{employee_name}' not found in our company, but similar employees exist:\n\n" + 
-                                 "\n".join([f"• {name}" for name in similar_names]) + 
-                                 f"\n\nDid you mean one of these employees, or would you like to add '{employee_name}' as a new employee?",
-                        "response_type": "human_loop_question",
-                        "conversation_state": {
-                            "pending_action": "show_employee_details",
-                            "alternative_action": "create_employee",
-                            "suggested_data": {
-                                "employee": best_match,
-                                "suggested_name": employee_name,
-                                "all_similar": similar_employees
-                            }
-                        },
-                        "follow_up_questions": [
-                            f"Show details for {best_match['name']}",
-                            f"Add '{employee_name}' as new employee"
-                        ]
-                    }
+                    print(f"DEBUG: Best similar match: '{best_match['name']}' (score: {similarity_score})")
+                    
+                    # If similarity is very high (>0.8), treat as likely exact match but still confirm
+                    if similarity_score > 0.8:
+                        print(f"DEBUG: High similarity score, asking for confirmation before showing details")
+                        return {
+                            "success": True,
+                            "message": f"✅ Found **{best_match['name']}** who closely matches '{employee_name}'! Department: {best_match['department_name']}, Role: {best_match['role']}. Would you like to see their full employee details?",
+                            "response_type": "human_loop_question",
+                            "conversation_state": {
+                                "pending_action": "show_employee_details",
+                                "suggested_data": {
+                                    "employee": best_match,
+                                    "searched_name": employee_name,
+                                    "original_query": query
+                                }
+                            },
+                            "follow_up_questions": [
+                                f"Yes, show me {best_match['name']}'s full employee details",
+                                "No, search for someone else"
+                            ]
+                        }
+                    else:
+                        # Regular similar names suggestion
+                        return {
+                            "success": True,
+                            "message": f"I couldn't find '{employee_name}' exactly, but found similar names:\n\n" + 
+                                     "\n".join([f"• {emp['name']} ({emp['department_name']} - {emp['role']})" for emp in similar_employees]) + 
+                                     f"\n\nDid you mean **{best_match['name']}**? They work in our company. Would you like to see their full employee details?",
+                            "response_type": "human_loop_question",
+                            "conversation_state": {
+                                "pending_action": "show_employee_details",
+                                "suggested_data": {
+                                    "employee": best_match,
+                                    "searched_name": employee_name,
+                                    "all_similar": similar_employees,
+                                    "original_query": query
+                                }
+                            },
+                            "follow_up_questions": [
+                                f"Yes, show me {best_match['name']}'s full employee details",
+                                "Show me a different employee from the list",
+                                "Try a different search term"
+                            ]
+                        }
                 else:
-                    # No similar employees found - ask human loop question for creation
+                    # No similar employees found - offer to create new employee
                     return {
                         "success": True,
-                        "message": f"Employee '{employee_name}' is not found in our company. Do you need to add them as a new employee?",
+                        "message": f"I don't find this employee {employee_name} in our company. Do you want to add {employee_name} as a new employee?",
+                        "data": [],
                         "response_type": "human_loop_question",
                         "conversation_state": {
                             "pending_action": "create_employee",
                             "suggested_data": {
-                                "suggested_name": employee_name
+                                "suggested_name": employee_name,
+                                "original_query": query
                             }
                         },
                         "follow_up_questions": [
-                            f"Yes, add '{employee_name}' as new employee",
-                            "No, let me search for a different employee"
+                            f"Yes, add {employee_name} as a new employee",
+                            "No, try a different search"
                         ]
                     }
             else:
@@ -376,12 +576,40 @@ def query_employee_details_intelligent(query: str) -> Dict[str, Any]:
         total_found = len(results)
         
         # Determine response strategy based on results count and query type
-        if query_type == "all_employees":
+        # PRIORITIZE individual employee queries when names are detected
+        if query_type == "individual" and employee_name:
+            # Individual employee query - handle all cases first before checking large groups
+            if total_found == 1:
+                # Single result - Always confirm first
+                employee = results[0]
+                logger.info(f"DEBUG: Individual query with single result - asking for confirmation before showing details")
+                return {
+                    "success": True,
+                    "message": f"**{employee['name']}** works in our company! Department: {employee['department_name']}, Role: {employee['role']}. Would you like to see their full employee details?",
+                    "response_type": "human_loop_question",
+                    "conversation_state": {
+                        "pending_action": "show_employee_details",
+                        "suggested_data": {
+                            "employee": employee,
+                            "searched_name": employee_name,
+                            "original_query": query
+                        }
+                    },
+                    "follow_up_questions": [
+                        f"Yes, show me {employee['name']}'s full employee details",
+                        "No, I don't need more details right now"
+                    ]
+                }
+            elif total_found > 1:
+                # Multiple results for individual name
+                logger.info(f"DEBUG: Individual query with multiple results - routing to multiple matches handler")
+                return _handle_multiple_matches_query(results, employee_name, query)
+            else:
+                # No results for individual name - handle similarity search
+                logger.info(f"DEBUG: Individual query with no exact results - will trigger similarity search")
+                pass  # Let it continue to the no-results handling below
+        elif query_type == "all_employees":
             return _handle_all_employees_query(results)
-        elif query_type == "individual" and total_found == 1:
-            return _handle_individual_employee_query(results[0], query)
-        elif query_type == "individual" and total_found > 1:
-            return _handle_multiple_matches_query(results, employee_name, query)
         elif query_type == "department" and total_found <= 15:
             return _handle_department_query(results, department, query)
         elif total_found > 15:
@@ -675,7 +903,16 @@ def get_department_employee_summary() -> Dict[str, Any]:
 @tool  
 def get_individual_employee_profile(employee_identifier: str) -> Dict[str, Any]:
     """
-    Get complete profile information for a specific employee.
+    DIRECT PROFILE LOOKUP: Get complete profile for a specific employee (INTERNAL USE ONLY).
+    
+    ⚠️ DO NOT USE FOR CONVERSATIONAL QUERIES LIKE:
+    - "do you know [name]" 
+    - "tell me about [name]"
+    - "who is [name]"
+    
+    USE query_employee_details_intelligent FOR CONVERSATIONAL QUERIES INSTEAD.
+    
+    This tool is for direct profile lookup when you already have confirmed employee identifier.
     
     Parameters:
     - employee_identifier: Employee ID (number), email, or full/partial name
@@ -948,6 +1185,822 @@ def get_tasks_report(leader_name: str = None, department: str = None,
         return f"Error generating tasks report: {e}"
 
 # ==============================================================================
+# INTELLIGENT TASK QUERY TOOLS
+# ==============================================================================
+
+@tool
+def query_tasks_intelligent(query: str) -> Dict[str, Any]:
+    """
+    Intelligent task query tool that understands natural language requests about tasks.
+    
+    Handles queries like:
+    - "today's tasks" / "tasks for today"
+    - "urgent tasks" / "high priority tasks"
+    - "tasks led by John" / "Sarah's tasks"
+    - "carpentry tasks" / "electrical work"
+    - "tasks in downtown office" / "remote tasks"
+    - "last week's completed tasks"
+    - "show me all tasks" / "monthly task summary"
+    
+    Uses smart response patterns:
+    - Individual queries (1 task): Full details immediately
+    - Small groups (2-10): Show basic details, offer more info
+    - Large groups (>10): Summary first, then ask for specifics
+    - Time-based queries: Relevant timeframe analysis
+    
+    Parameters:
+    - query: Natural language query about tasks
+    
+    Returns:
+    - success: bool
+    - message: Human-readable summary
+    - data: Task data (varies based on query type)
+    - response_type: "individual_task", "multiple_tasks", "task_statistics", etc.
+    - follow_up_questions: Suggested next actions
+    - total_found: Number of tasks found
+    """
+    try:
+        import re
+        from datetime import datetime, timedelta
+        
+        # Initialize query parameters
+        time_filter = None
+        priority_filter = []
+        leader_names = []
+        labour_skills = []
+        departments = []
+        locations = []
+        task_titles = []
+        query_type = "general"
+        
+        query_lower = query.lower().strip()
+        
+        # Detect time-based filters
+        current_date = datetime.now().date()
+        time_patterns = {
+            "today": (current_date, current_date),
+            "yesterday": (current_date - timedelta(days=1), current_date - timedelta(days=1)),
+            "this week": (current_date - timedelta(days=current_date.weekday()), current_date),
+            "last week": (current_date - timedelta(days=current_date.weekday() + 7), current_date - timedelta(days=current_date.weekday() + 1)),
+            "this month": (current_date.replace(day=1), current_date),
+            "last month": ((current_date.replace(day=1) - timedelta(days=1)).replace(day=1), current_date.replace(day=1) - timedelta(days=1))
+        }
+        
+        for time_key, (start_date, end_date) in time_patterns.items():
+            if time_key in query_lower or time_key.replace(" ", "") in query_lower:
+                time_filter = (start_date, end_date)
+                break
+        
+        # Detect priority filters
+        priority_patterns = {
+            "urgent": ["Urgent"],
+            "high priority": ["High"],
+            "high": ["High"],
+            "medium priority": ["Medium"],
+            "medium": ["Medium"],
+            "low priority": ["Low"],
+            "low": ["Low"]
+        }
+        
+        for priority_key, priority_values in priority_patterns.items():
+            if priority_key in query_lower:
+                priority_filter.extend(priority_values)
+        
+        # Detect specific people (leaders or employees)
+        name_patterns = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', query)
+        potential_names = [name for name in name_patterns if len(name.split()) <= 3 and name not in ['Priority', 'High', 'Low', 'Medium', 'Urgent']]
+        
+        # Detect locations
+        location_keywords = ['office', 'downtown', 'remote', 'site', 'warehouse', 'factory', 'field']
+        for keyword in location_keywords:
+            if keyword in query_lower:
+                locations.append(keyword)
+        
+        # Detect skills/labour types
+        skill_keywords = ['carpentry', 'electrical', 'plumbing', 'painting', 'construction', 'maintenance', 'repair', 'installation']
+        for skill in skill_keywords:
+            if skill in query_lower:
+                labour_skills.append(skill)
+        
+        # Build dynamic SQL query
+        base_query = """
+            SELECT DISTINCT 
+                t.id, t.task_title, t.location, t.expected_days, 
+                t.priority, t.notes, t.created_at,
+                tg.group_name,
+                STRING_AGG(DISTINCT e.name, ', ') as leader_names,
+                STRING_AGG(DISTINCT d.name, ', ') as department_names,
+                STRING_AGG(DISTINCT l.name, ', ') as labour_names,
+                STRING_AGG(DISTINCT l.skill, ', ') as labour_skills
+            FROM tasks t
+            LEFT JOIN task_groups tg ON t.task_group_id = tg.id
+            LEFT JOIN task_group_leaders tgl ON tg.id = tgl.task_group_id
+            LEFT JOIN employees e ON tgl.employee_id = e.id
+            LEFT JOIN departments d ON e.department_id = d.id
+            LEFT JOIN task_labours tl ON t.id = tl.task_id
+            LEFT JOIN labours l ON tl.labour_id = l.id
+        """
+        
+        where_conditions = []
+        params = []
+        param_count = 0
+        
+        # Apply time filter
+        if time_filter:
+            start_date, end_date = time_filter
+            where_conditions.append(f"DATE(t.created_at) >= %s AND DATE(t.created_at) <= %s")
+            params.extend([start_date, end_date])
+            param_count += 2
+        
+        # Apply priority filter
+        if priority_filter:
+            placeholders = ', '.join(['%s'] * len(priority_filter))
+            where_conditions.append(f"t.priority IN ({placeholders})")
+            params.extend(priority_filter)
+            param_count += len(priority_filter)
+        
+        # Apply name filter (search in leaders)
+        if potential_names:
+            name_conditions = []
+            for name in potential_names:
+                name_conditions.append("e.name ILIKE %s")
+                params.append(f"%{name}%")
+                param_count += 1
+            if name_conditions:
+                where_conditions.append(f"({' OR '.join(name_conditions)})")
+        
+        # Apply location filter
+        if locations:
+            location_conditions = []
+            for location in locations:
+                location_conditions.append("t.location ILIKE %s")
+                params.append(f"%{location}%")
+                param_count += 1
+            if location_conditions:
+                where_conditions.append(f"({' OR '.join(location_conditions)})")
+        
+        # Apply skill filter
+        if labour_skills:
+            skill_conditions = []
+            for skill in labour_skills:
+                skill_conditions.append("l.skill ILIKE %s")
+                params.append(f"%{skill}%")
+                param_count += 1
+            if skill_conditions:
+                where_conditions.append(f"({' OR '.join(skill_conditions)})")
+        
+        # Build final query
+        if where_conditions:
+            final_query = base_query + " WHERE " + " AND ".join(where_conditions)
+        else:
+            final_query = base_query
+            
+        final_query += " GROUP BY t.id, t.task_title, t.location, t.expected_days, t.priority, t.notes, t.created_at, tg.group_name ORDER BY t.created_at DESC"
+        
+        # Execute query
+        tasks = execute_query(final_query, tuple(params))
+        
+        if not tasks:
+            return {
+                "success": False,
+                "message": "No tasks found matching your criteria. Try adjusting your search terms or time period.",
+                "data": [],
+                "response_type": "task_not_found",
+                "total_found": 0,
+                "follow_up_questions": [
+                    "Would you like to see all tasks?",
+                    "Try searching for a different time period?",
+                    "Search by task priority instead?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "priority": priority_filter,
+                    "leaders": potential_names,
+                    "locations": locations,
+                    "skills": labour_skills,
+                    "has_time_filter": time_filter is not None
+                }
+            }
+        
+        # Determine response type based on result count
+        task_count = len(tasks)
+        
+        if task_count == 1:
+            # Individual task - show full details
+            task = tasks[0]
+            return {
+                "success": True,
+                "message": f"Found 1 task: **{task['task_title']}**",
+                "data": {
+                    "task_id": task['id'],
+                    "title": task['task_title'],
+                    "priority": task['priority'],
+                    "location": task['location'],
+                    "expected_days": task['expected_days'],
+                    "notes": task['notes'],
+                    "group_name": task['group_name'],
+                    "leaders": task['leader_names'] or "No leaders assigned",
+                    "departments": task['department_names'] or "No departments",
+                    "labourers": task['labour_names'] or "No labourers assigned",
+                    "labour_skills": task['labour_skills'] or "No skills specified",
+                    "created_at": task['created_at'].strftime('%Y-%m-%d %H:%M') if task['created_at'] else None
+                },
+                "response_type": "individual_task",
+                "total_found": 1,
+                "follow_up_questions": [
+                    "Would you like to see related tasks?",
+                    "Show me other tasks with the same priority?",
+                    "Find tasks from the same group?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "priority": priority_filter,
+                    "leaders": potential_names,
+                    "locations": locations,
+                    "skills": labour_skills
+                }
+            }
+        
+        elif task_count <= 10:
+            # Small group - show basic details with expansion option
+            task_list = []
+            for task in tasks:
+                task_list.append({
+                    "id": task['id'],
+                    "title": task['task_title'],
+                    "priority": task['priority'],
+                    "group": task['group_name'],
+                    "leaders": task['leader_names'],
+                    "location": task['location'],
+                    "created_at": task['created_at'].strftime('%Y-%m-%d') if task['created_at'] else None
+                })
+            
+            return {
+                "success": True,
+                "message": f"Found {task_count} tasks matching your criteria:",
+                "data": task_list,
+                "response_type": "multiple_tasks",
+                "total_found": task_count,
+                "follow_up_questions": [
+                    "Show me full details for any specific task?",
+                    "Filter by priority level?",
+                    "Group by task leaders?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "priority": priority_filter,
+                    "leaders": potential_names,
+                    "locations": locations,
+                    "skills": labour_skills
+                }
+            }
+        
+        else:
+            # Large group - show statistics and summary
+            priority_breakdown = {}
+            group_breakdown = {}
+            location_breakdown = {}
+            
+            for task in tasks:
+                # Priority breakdown
+                priority = task['priority'] or 'Unspecified'
+                priority_breakdown[priority] = priority_breakdown.get(priority, 0) + 1
+                
+                # Group breakdown
+                group = task['group_name'] or 'No Group'
+                group_breakdown[group] = group_breakdown.get(group, 0) + 1
+                
+                # Location breakdown
+                location = task['location'] or 'No Location'
+                location_breakdown[location] = location_breakdown.get(location, 0) + 1
+            
+            return {
+                "success": True,
+                "message": f"Found {task_count} tasks. Here's a summary breakdown:",
+                "data": {
+                    "total_tasks": task_count,
+                    "priority_breakdown": priority_breakdown,
+                    "group_breakdown": group_breakdown,
+                    "location_breakdown": location_breakdown,
+                    "sample_tasks": [
+                        {
+                            "title": task['task_title'],
+                            "priority": task['priority'],
+                            "group": task['group_name'],
+                            "created_at": task['created_at'].strftime('%Y-%m-%d') if task['created_at'] else None
+                        } for task in tasks[:5]  # Show first 5 as samples
+                    ]
+                },
+                "response_type": "task_statistics",
+                "total_found": task_count,
+                "priority_breakdown": priority_breakdown,
+                "completion_trends": {},  # Could be enhanced later
+                "follow_up_questions": [
+                    "Show me only urgent/high priority tasks?",
+                    "Filter by specific task group?",
+                    "Show tasks from last week only?",
+                    "Group tasks by location?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "priority": priority_filter,
+                    "leaders": potential_names,
+                    "locations": locations,
+                    "skills": labour_skills
+                }
+            }
+    
+    except Exception as e:
+        logger.error(f"Error in intelligent task query: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"An error occurred while searching for tasks: {str(e)}",
+            "data": None,
+            "response_type": "error",
+            "total_found": 0,
+            "follow_up_questions": [
+                "Try rephrasing your query?",
+                "Search for tasks in a different way?"
+            ]
+        }
+
+# ==============================================================================
+# INTELLIGENT LABOUR QUERY TOOLS
+# ==============================================================================
+
+@tool
+def query_labourers_intelligent(query: str) -> Dict[str, Any]:
+    """
+    Intelligent labour query tool that understands natural language requests about labourers.
+    
+    Handles queries like:
+    - "show me all carpenters" / "electricians available"
+    - "who is John the carpenter" / "labour details for Sarah"
+    - "busy labourers" / "available workers" / "overloaded staff"
+    - "who worked on urgent tasks" / "labourers on downtown projects"
+    - "workload analysis" / "skill distribution"
+    - "carpenters working with John (leader)" / "electrical workers this week"
+    
+    Uses smart response patterns:
+    - Individual queries (1 person): Full profile with task assignments
+    - Skill groups: Labour teams organized by specialization
+    - Workload analysis: Busy vs available labourers with task counts
+    - Large datasets: Statistical summaries with skill breakdowns
+    
+    Parameters:
+    - query: Natural language query about labourers
+    
+    Returns:
+    - success: bool
+    - message: Human-readable summary
+    - data: Labour data (varies based on query type)
+    - response_type: "individual_labour", "skill_group", "workload_analysis", etc.
+    - follow_up_questions: Suggested next actions
+    - total_found: Number of labourers found
+    """
+    try:
+        import re
+        from datetime import datetime, timedelta
+        
+        # Initialize query parameters
+        skill_filter = []
+        labour_names = []
+        workload_filter = []
+        task_types = []
+        leader_names = []
+        departments = []
+        time_filter = None
+        query_type = "general"
+        
+        query_lower = query.lower().strip()
+        
+        # Detect labour names (people search)
+        name_patterns = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', query)
+        potential_names = [name for name in name_patterns if len(name.split()) <= 3 and name not in ['Priority', 'High', 'Low', 'Medium', 'Urgent']]
+        
+        # Detect skill-based queries
+        skill_patterns = {
+            'carpenter': ['carpenter', 'carpentry', 'wood', 'woodwork'],
+            'electrician': ['electrician', 'electrical', 'electric', 'wiring'],
+            'plumber': ['plumber', 'plumbing', 'pipes', 'water'],
+            'painter': ['painter', 'painting', 'paint'],
+            'construction': ['construction', 'builder', 'building'],
+            'maintenance': ['maintenance', 'repair', 'fix'],
+            'installation': ['installation', 'installer', 'install'],
+            'welder': ['welder', 'welding', 'metal'],
+            'mason': ['mason', 'masonry', 'brick', 'stone']
+        }
+        
+        for skill_key, skill_aliases in skill_patterns.items():
+            if any(alias in query_lower for alias in skill_aliases):
+                skill_filter.append(skill_key)
+        
+        # Detect workload-related queries
+        workload_patterns = {
+            'available': ['available', 'free', 'idle', 'no tasks', 'not busy'],
+            'busy': ['busy', 'working', 'occupied', 'assigned'],
+            'overloaded': ['overloaded', 'too much work', 'overwhelmed', 'heavy load'],
+            'light_load': ['light load', 'few tasks', 'not much work']
+        }
+        
+        for workload_key, workload_aliases in workload_patterns.items():
+            if any(alias in query_lower for alias in workload_aliases):
+                workload_filter.append(workload_key)
+        
+        # Detect task priority and urgency filters
+        if any(word in query_lower for word in ['urgent', 'high priority', 'critical']):
+            task_types.append('urgent')
+        
+        # Detect time-based filters (reusing from task system)
+        current_date = datetime.now().date()
+        time_patterns = {
+            "today": (current_date, current_date),
+            "yesterday": (current_date - timedelta(days=1), current_date - timedelta(days=1)),
+            "this week": (current_date - timedelta(days=current_date.weekday()), current_date),
+            "last week": (current_date - timedelta(days=current_date.weekday() + 7), current_date - timedelta(days=current_date.weekday() + 1)),
+            "this month": (current_date.replace(day=1), current_date),
+            "last month": ((current_date.replace(day=1) - timedelta(days=1)).replace(day=1), current_date.replace(day=1) - timedelta(days=1))
+        }
+        
+        for time_key, (start_date, end_date) in time_patterns.items():
+            if time_key in query_lower or time_key.replace(" ", "") in query_lower:
+                time_filter = (start_date, end_date)
+                break
+        
+        # Build dynamic SQL query for labourers
+        base_query = """
+            SELECT DISTINCT 
+                l.id, l.name, l.skill, l.created_at, l.updated_at,
+                COUNT(DISTINCT tl.task_id) as current_task_count,
+                STRING_AGG(DISTINCT t.task_title, ', ') as current_tasks,
+                STRING_AGG(DISTINCT tg.group_name, ', ') as task_groups,
+                STRING_AGG(DISTINCT e.name, ', ') as working_under_leaders,
+                STRING_AGG(DISTINCT d.name, ', ') as leader_departments,
+                CASE 
+                    WHEN COUNT(DISTINCT tl.task_id) = 0 THEN 'available'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 2 THEN 'light_load'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 4 THEN 'moderate_load'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 6 THEN 'heavy_load'
+                    ELSE 'overloaded'
+                END as workload_status,
+                AVG(CASE 
+                    WHEN t.priority = 'Urgent' THEN 4
+                    WHEN t.priority = 'High' THEN 3
+                    WHEN t.priority = 'Medium' THEN 2
+                    WHEN t.priority = 'Low' THEN 1
+                    ELSE 2
+                END) as avg_task_priority
+            FROM labours l
+            LEFT JOIN task_labours tl ON l.id = tl.labour_id
+            LEFT JOIN tasks t ON tl.task_id = t.id
+            LEFT JOIN task_groups tg ON t.task_group_id = tg.id
+            LEFT JOIN task_group_leaders tgl ON tg.id = tgl.task_group_id
+            LEFT JOIN employees e ON tgl.employee_id = e.id
+            LEFT JOIN departments d ON e.department_id = d.id
+        """
+        
+        where_conditions = []
+        params = []
+        
+        # Apply time filter for task assignments
+        if time_filter:
+            start_date, end_date = time_filter
+            where_conditions.append("(t.created_at IS NULL OR (DATE(t.created_at) >= %s AND DATE(t.created_at) <= %s))")
+            params.extend([start_date, end_date])
+        
+        # Apply skill filter
+        if skill_filter:
+            skill_conditions = []
+            for skill in skill_filter:
+                skill_conditions.append("l.skill ILIKE %s")
+                params.append(f"%{skill}%")
+            if skill_conditions:
+                where_conditions.append(f"({' OR '.join(skill_conditions)})")
+        
+        # Apply name filter
+        if potential_names:
+            name_conditions = []
+            for name in potential_names:
+                name_conditions.append("l.name ILIKE %s")
+                params.append(f"%{name}%")
+            if name_conditions:
+                where_conditions.append(f"({' OR '.join(name_conditions)})")
+        
+        # Apply task priority filter
+        if task_types and 'urgent' in task_types:
+            where_conditions.append("(t.priority IN ('Urgent', 'High') OR t.priority IS NULL)")
+        
+        # Build final query
+        if where_conditions:
+            final_query = base_query + " WHERE " + " AND ".join(where_conditions)
+        else:
+            final_query = base_query
+            
+        final_query += " GROUP BY l.id, l.name, l.skill, l.created_at, l.updated_at ORDER BY l.name ASC"
+        
+        # Execute query
+        labourers = execute_query(final_query, tuple(params))
+        
+        if not labourers:
+            return {
+                "success": False,
+                "message": "No labourers found matching your criteria. Try adjusting your search terms or filters.",
+                "data": [],
+                "response_type": "labour_not_found",
+                "total_found": 0,
+                "follow_up_questions": [
+                    "Would you like to see all labourers?",
+                    "Search for a different skill type?",
+                    "Check workload for all workers?"
+                ],
+                "alternative_queries": [
+                    "Show me all labourers",
+                    "Available workers",
+                    "Skill distribution"
+                ],
+                "similar_skills": ["carpenter", "electrician", "plumber", "painter"],
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "names": potential_names,
+                    "workload": workload_filter,
+                    "has_time_filter": time_filter is not None
+                }
+            }
+        
+        # Apply workload filter after getting results (since it's calculated in query)
+        if workload_filter:
+            filtered_labourers = []
+            for labourer in labourers:
+                if labourer['workload_status'] in workload_filter:
+                    filtered_labourers.append(labourer)
+            labourers = filtered_labourers
+        
+        if not labourers and workload_filter:
+            return {
+                "success": False,
+                "message": f"No labourers found with workload status: {', '.join(workload_filter)}",
+                "data": [],
+                "response_type": "labour_not_found",
+                "total_found": 0,
+                "follow_up_questions": [
+                    "Try a different workload filter?",
+                    "Show workload analysis for all labourers?",
+                    "See available vs busy workers?"
+                ],
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "workload": workload_filter
+                }
+            }
+        
+        # Determine response type based on result count and query intent
+        labour_count = len(labourers)
+        
+        if labour_count == 1:
+            # Individual labour - show full details
+            labourer = labourers[0]
+            workload_analysis = {
+                "status": labourer['workload_status'],
+                "task_count": labourer['current_task_count'],
+                "average_priority": round(labourer['avg_task_priority'] or 0, 1),
+                "recommendation": _get_workload_recommendation(labourer['workload_status'], labourer['current_task_count'])
+            }
+            
+            return {
+                "success": True,
+                "message": f"Found labourer: **{labourer['name']}** ({labourer['skill']})",
+                "data": {
+                    "labour_id": labourer['id'],
+                    "name": labourer['name'],
+                    "skill": labourer['skill'],
+                    "workload_status": labourer['workload_status'],
+                    "current_task_count": labourer['current_task_count'],
+                    "current_tasks": labourer['current_tasks'] or "No current tasks",
+                    "task_groups": labourer['task_groups'] or "No task groups",
+                    "working_under_leaders": labourer['working_under_leaders'] or "No current leaders",
+                    "leader_departments": labourer['leader_departments'] or "No departments",
+                    "average_task_priority": round(labourer['avg_task_priority'] or 0, 1),
+                    "created_at": labourer['created_at'].strftime('%Y-%m-%d') if labourer['created_at'] else None
+                },
+                "response_type": "individual_labour",
+                "total_found": 1,
+                "workload_analysis": workload_analysis,
+                "follow_up_questions": [
+                    "Show other labourers with the same skill?",
+                    "Find available workers for task assignment?",
+                    "Show workload analysis for all workers?"
+                ],
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "names": potential_names,
+                    "workload": workload_filter
+                }
+            }
+        
+        elif labour_count <= 10 and len(skill_filter) == 1:
+            # Skill group - show workers organized by skill
+            skill_name = skill_filter[0] if skill_filter else "Mixed Skills"
+            labour_list = []
+            workload_dist = {}
+            
+            for labourer in labourers:
+                labour_list.append({
+                    "id": labourer['id'],
+                    "name": labourer['name'],
+                    "skill": labourer['skill'],
+                    "workload_status": labourer['workload_status'],
+                    "task_count": labourer['current_task_count'],
+                    "current_tasks": labourer['current_tasks'],
+                    "leaders": labourer['working_under_leaders']
+                })
+                
+                # Track workload distribution
+                status = labourer['workload_status']
+                workload_dist[status] = workload_dist.get(status, 0) + 1
+            
+            return {
+                "success": True,
+                "message": f"Found {labour_count} {skill_name} workers:",
+                "data": labour_list,
+                "response_type": "skill_group",
+                "skill_name": skill_name,
+                "total_found": labour_count,
+                "workload_distribution": workload_dist,
+                "follow_up_questions": [
+                    f"Show only available {skill_name}s?",
+                    f"Find busy {skill_name}s?",
+                    "Get detailed workload analysis?"
+                ],
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "workload": workload_filter
+                }
+            }
+        
+        elif labour_count <= 15:
+            # Multiple labourers - show summary list
+            labour_list = []
+            skill_breakdown = {}
+            workload_summary = {}
+            
+            for labourer in labourers:
+                labour_list.append({
+                    "id": labourer['id'],
+                    "name": labourer['name'],
+                    "skill": labourer['skill'],
+                    "workload_status": labourer['workload_status'],
+                    "task_count": labourer['current_task_count'],
+                    "leaders": labourer['working_under_leaders']
+                })
+                
+                # Track skill breakdown
+                skill = labourer['skill']
+                skill_breakdown[skill] = skill_breakdown.get(skill, 0) + 1
+                
+                # Track workload summary
+                status = labourer['workload_status']
+                workload_summary[status] = workload_summary.get(status, 0) + 1
+            
+            return {
+                "success": True,
+                "message": f"Found {labour_count} labourers matching your criteria:",
+                "data": labour_list,
+                "response_type": "multiple_labourers",
+                "total_found": labour_count,
+                "skill_breakdown": skill_breakdown,
+                "workload_summary": workload_summary,
+                "follow_up_questions": [
+                    "Filter by specific skill?",
+                    "Show only available workers?",
+                    "Get workload analysis?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "names": potential_names,
+                    "workload": workload_filter
+                }
+            }
+        
+        else:
+            # Large group - show statistics and analysis
+            skill_breakdown = {}
+            workload_breakdown = {}
+            task_assignment_patterns = {}
+            
+            for labourer in labourers:
+                # Skill breakdown
+                skill = labourer['skill']
+                skill_breakdown[skill] = skill_breakdown.get(skill, 0) + 1
+                
+                # Workload breakdown
+                status = labourer['workload_status']
+                workload_breakdown[status] = workload_breakdown.get(status, 0) + 1
+                
+                # Task assignment patterns
+                task_count = labourer['current_task_count']
+                if task_count == 0:
+                    task_assignment_patterns['No tasks'] = task_assignment_patterns.get('No tasks', 0) + 1
+                elif task_count <= 2:
+                    task_assignment_patterns['1-2 tasks'] = task_assignment_patterns.get('1-2 tasks', 0) + 1
+                elif task_count <= 4:
+                    task_assignment_patterns['3-4 tasks'] = task_assignment_patterns.get('3-4 tasks', 0) + 1
+                else:
+                    task_assignment_patterns['5+ tasks'] = task_assignment_patterns.get('5+ tasks', 0) + 1
+            
+            # Generate recommendations
+            recommendations = _generate_labour_recommendations(workload_breakdown, skill_breakdown, labour_count)
+            
+            return {
+                "success": True,
+                "message": f"Found {labour_count} labourers. Here's a comprehensive analysis:",
+                "data": {
+                    "total_labourers": labour_count,
+                    "skill_breakdown": skill_breakdown,
+                    "workload_breakdown": workload_breakdown,
+                    "task_assignment_patterns": task_assignment_patterns,
+                    "sample_labourers": [
+                        {
+                            "name": labourer['name'],
+                            "skill": labourer['skill'],
+                            "workload_status": labourer['workload_status'],
+                            "task_count": labourer['current_task_count']
+                        } for labourer in labourers[:5]  # Show first 5 as samples
+                    ]
+                },
+                "response_type": "labour_statistics",
+                "total_labourers": labour_count,
+                "skill_breakdown": skill_breakdown,
+                "workload_trends": workload_breakdown,
+                "task_assignment_patterns": task_assignment_patterns,
+                "recommendations": recommendations,
+                "follow_up_questions": [
+                    "Show only available workers?",
+                    "Filter by specific skill (carpenter, electrician, etc.)?",
+                    "Find overloaded workers who need help?",
+                    "Show detailed workload analysis?"
+                ],
+                "time_period": str(time_filter) if time_filter else None,
+                "filters_applied": {
+                    "skills": skill_filter,
+                    "workload": workload_filter,
+                    "task_types": task_types
+                }
+            }
+    
+    except Exception as e:
+        logger.error(f"Error in intelligent labour query: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"An error occurred while searching for labourers: {str(e)}",
+            "data": None,
+            "response_type": "error",
+            "total_found": 0,
+            "follow_up_questions": [
+                "Try rephrasing your query?",
+                "Search for labourers in a different way?"
+            ]
+        }
+
+def _get_workload_recommendation(workload_status: str, task_count: int) -> str:
+    """Generate workload-based recommendations for individual labourers"""
+    if workload_status == 'available':
+        return "Available for new task assignments"
+    elif workload_status == 'light_load':
+        return "Can take on additional tasks"
+    elif workload_status == 'moderate_load':
+        return "Well-balanced workload"
+    elif workload_status == 'heavy_load':
+        return "Consider task priority before adding more work"
+    else:  # overloaded
+        return "Should redistribute some tasks to other available workers"
+
+def _generate_labour_recommendations(workload_breakdown: dict, skill_breakdown: dict, total_count: int) -> List[str]:
+    """Generate actionable recommendations based on labour analysis"""
+    recommendations = []
+    
+    # Workload balance recommendations
+    available = workload_breakdown.get('available', 0)
+    overloaded = workload_breakdown.get('overloaded', 0)
+    
+    if available > 0 and overloaded > 0:
+        recommendations.append(f"Consider redistributing tasks from {overloaded} overloaded workers to {available} available workers")
+    elif available > total_count * 0.3:
+        recommendations.append(f"You have {available} available workers ready for new assignments")
+    elif overloaded > total_count * 0.2:
+        recommendations.append(f"Warning: {overloaded} workers are overloaded and may need support")
+    
+    # Skill distribution recommendations
+    if len(skill_breakdown) < 3:
+        recommendations.append("Consider diversifying skills - you may need workers with complementary abilities")
+    
+    most_common_skill = max(skill_breakdown, key=skill_breakdown.get) if skill_breakdown else None
+    if most_common_skill and skill_breakdown[most_common_skill] > total_count * 0.5:
+        recommendations.append(f"High concentration of {most_common_skill}s - consider cross-training in other skills")
+    
+    return recommendations
+
+# ==============================================================================
 # EMPLOYEE MANAGEMENT TOOLS (CREATE/UPDATE)
 # ==============================================================================
 
@@ -1130,26 +2183,22 @@ def update_employee_intelligent(
     update_reason: str = ""
 ) -> Dict[str, Any]:
     """
-    Intelligent employee update tool with change tracking and validation.
+    UPDATE ONLY: Intelligent employee update tool that triggers form popups for editing employee information.
     
-    Handles natural language requests like:
-    - "Update Sarah's phone number to 555-1234"
-    - "Change John's role to leader"
-    - "Move Alice to marketing department"
-    - "Update Mike Johnson's email"
+    USE THIS TOOL FOR UPDATE QUERIES ONLY:
+    - "update [NAME] details" / "change [NAME]" 
+    - "modify [NAME]" / "edit [NAME]"
+    - "update [NAME]'s phone" / "change [NAME]'s role"
+    - "move [NAME] to marketing" / "promote [NAME]"
     
-    Parameters:
-    - query: Natural language request for employee update
-    - employee_identifier: Employee ID, email, or name to identify employee
-    - field_updates: Dictionary of fields to update {field: new_value}
-    - update_reason: Reason for the update (optional)
+    IMPORTANT: This tool ALWAYS triggers form popups for editing employee information.
     
-    Returns:
-    - success: bool
-    - message: Human-readable result
-    - response_type: Type of response (form_request, employee_found, validation_error, etc.)
-    - data: Employee data and form information
-    - changes_made: List of changes if successful
+    Do NOT use for:
+    - "give me [NAME] details" (use query_employee_details_intelligent instead)
+    - "show me [NAME]" (use query_employee_details_intelligent instead)
+    - "tell me about [NAME]" (use query_employee_details_intelligent instead)
+    
+    Always opens update forms when employee is found.
     """
     try:
         # Initialize field_updates if None
@@ -1727,8 +2776,20 @@ def _find_similar_employees(search_name: str, threshold: float = 0.6) -> List[Di
         )
         
         similar_employees = []
+        search_name_lower = search_name.lower().strip()
         
         for employee in all_employees:
+            employee_name_lower = employee['name'].lower().strip()
+            
+            # First check if it's an exact match (should never happen if this function is called correctly)
+            if search_name_lower == employee_name_lower:
+                # This is actually an exact match, should have been caught earlier
+                # Return with perfect score but log the issue
+                employee_with_similarity = dict(employee)
+                employee_with_similarity['similarity_score'] = 1.0
+                return [employee_with_similarity]  # Return immediately
+            
+            # Calculate similarity for non-exact matches
             similarity = _calculate_string_similarity(search_name, employee['name'])
             if similarity >= threshold:
                 employee_with_similarity = dict(employee)
@@ -2635,386 +3696,37 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             "query_understood": query
         }
 
-@tool
-def create_attendance_record(
-    employee_identifier: str, 
-    attendance_date: str = "", 
-    status: str = "Present", 
-    check_in_time: str = "", 
-    check_out_time: str = "", 
-    notes: str = ""
-) -> Dict[str, Any]:
-    """
-    Creates a new attendance record for an employee.
-    
-    Parameters:
-    - employee_identifier: Employee ID (number) or employee name
-    - attendance_date: Date in YYYY-MM-DD format (defaults to today)
-    - status: Attendance status (Present, Work from home, Planned Leave, etc.)
-    - check_in_time: Check-in time in HH:MM format (optional)
-    - check_out_time: Check-out time in HH:MM format (optional)
-    - notes: Additional notes (optional)
-    
-    Returns:
-    - success: bool
-    - message: Human-readable result
-    - data: Created record details
-    """
-    try:
-        # Validate status
-        valid_statuses = [
-            "Present", "Work from home", "Planned Leave", "Sudden Leave", 
-            "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"
-        ]
-        if status not in valid_statuses:
-            return {
-                "success": False,
-                "message": f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}"
-            }
-        
-        # Find employee
-        employee = None
-        if employee_identifier.isdigit():
-            # Lookup by ID
-            employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
-            )
-        else:
-            # Lookup by name (fuzzy matching)
-            employee = execute_query(
-                "SELECT id, name, email, role FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
-            )
-        
-        if not employee:
-            return {
-                "success": False,
-                "message": f"Employee '{employee_identifier}' not found or inactive."
-            }
-        
-        if len(employee) > 1:
-            # Multiple matches found
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            return {
-                "success": False,
-                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
-            }
-        
-        employee_data = employee[0]
-        employee_id = employee_data['id']
-        employee_name = employee_data['name']
-        
-        # Parse date
-        if attendance_date:
-            try:
-                target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
-            except ValueError:
-                return {
-                    "success": False,
-                    "message": f"Invalid date format '{attendance_date}'. Use YYYY-MM-DD format."
-                }
-        else:
-            target_date = date.today()
-        
-        # Check if attendance already exists for this date
-        existing = execute_query(
-            "SELECT id, status FROM attendances WHERE employee_id = %s AND attendance_date = %s",
-            (employee_id, target_date)
-        )
-        
-        if existing:
-            return {
-                "success": False,
-                "message": f"Attendance already exists for {employee_name} on {target_date.strftime('%Y-%m-%d')} with status '{existing[0]['status']}'. Use update_attendance_record to modify existing records."
-            }
-        
-        # Parse times if provided
-        parsed_check_in = None
-        parsed_check_out = None
-        
-        if check_in_time:
-            try:
-                parsed_check_in = datetime.strptime(f"{target_date} {check_in_time}", '%Y-%m-%d %H:%M')
-            except ValueError:
-                return {
-                    "success": False,
-                    "message": f"Invalid check-in time format '{check_in_time}'. Use HH:MM format."
-                }
-        
-        if check_out_time:
-            try:
-                parsed_check_out = datetime.strptime(f"{target_date} {check_out_time}", '%Y-%m-%d %H:%M')
-            except ValueError:
-                return {
-                    "success": False,
-                    "message": f"Invalid check-out time format '{check_out_time}'. Use HH:MM format."
-                }
-        
-        # Create new attendance record
-        execute_query(
-            """
-            INSERT INTO attendances (employee_id, attendance_date, status, check_in_time, check_out_time, notes, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (employee_id, target_date, status, parsed_check_in, parsed_check_out, notes, datetime.now()),
-            fetch=False
-        )
-        
-        # Retrieve the created record
-        created_record = execute_query(
-            """
-            SELECT a.*, e.name as employee_name, d.name as department_name
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            WHERE a.employee_id = %s AND a.attendance_date = %s
-            """,
-            (employee_id, target_date)
-        )[0]
-        
-        message = f"Attendance record created successfully for {employee_name} on {target_date.strftime('%Y-%m-%d')} with status '{status}'"
-        
-        if parsed_check_in:
-            message += f", check-in: {check_in_time}"
-        if parsed_check_out:
-            message += f", check-out: {check_out_time}"
-        if notes:
-            message += f", notes: {notes}"
-        
-        return {
-            "success": True,
-            "message": message,
-            "data": created_record,
-            "employee_name": employee_name,
-            "employee_id": employee_id,
-            "attendance_date": target_date.strftime('%Y-%m-%d'),
-            "status": status
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error creating attendance record: {str(e)}"
-        }
+
+
+# Removed create_attendance_record and update_attendance_record functions - not implemented
 
 @tool
-def update_attendance_record(
-    employee_identifier: str,
-    attendance_date: str,
-    status: str = None,
-    check_in_time: str = None,
-    check_out_time: str = None,
-    notes: str = None,
-    update_reason: str = ""
-) -> Dict[str, Any]:
+def handle_attendance_create_update_request(query: str) -> Dict[str, Any]:
     """
-    Updates an existing attendance record for an employee.
+    Handles requests for attendance creation or updates that are not yet implemented.
+    
+    This function provides a helpful response when users ask to create or update 
+    attendance records, explaining what's available instead.
     
     Parameters:
-    - employee_identifier: Employee ID (number) or employee name
-    - attendance_date: Date in YYYY-MM-DD format of the record to update
-    - status: New attendance status (optional)
-    - check_in_time: New check-in time in HH:MM format (optional)
-    - check_out_time: New check-out time in HH:MM format (optional)
-    - notes: New notes (optional)
-    - update_reason: Reason for the update (for audit trail)
+    - query: The user's original request
     
     Returns:
     - success: bool
-    - message: Human-readable result
-    - data: Updated record details
-    - changes_made: List of fields that were changed
+    - message: Human-readable response explaining the limitation
+    - available_functions: List of available attendance functions
     """
-    try:
-        # Find employee
-        employee = None
-        if employee_identifier.isdigit():
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE id = %s AND is_active = true",
-                (int(employee_identifier),)
-            )
-        else:
-            employee = execute_query(
-                "SELECT id, name, email FROM employees WHERE name ILIKE %s AND is_active = true",
-                (f"%{employee_identifier}%",)
-            )
-        
-        if not employee:
-            return {
-                "success": False,
-                "message": f"Employee '{employee_identifier}' not found or inactive."
-            }
-        
-        if len(employee) > 1:
-            matches = [f"{emp['name']} (ID: {emp['id']})" for emp in employee]
-            return {
-                "success": False,
-                "message": f"Multiple employees found matching '{employee_identifier}'. Please be more specific. Found: {', '.join(matches)}"
-            }
-        
-        employee_data = employee[0]
-        employee_id = employee_data['id']
-        employee_name = employee_data['name']
-        
-        # Parse date
-        try:
-            target_date = datetime.strptime(attendance_date, '%Y-%m-%d').date()
-        except ValueError:
-            return {
-                "success": False,
-                "message": f"Invalid date format '{attendance_date}'. Use YYYY-MM-DD format."
-            }
-        
-        # Find existing record
-        existing_record = execute_query(
-            """
-            SELECT a.*, e.name as employee_name, d.name as department_name
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            WHERE a.employee_id = %s AND a.attendance_date = %s
-            """,
-            (employee_id, target_date)
-        )
-        
-        if not existing_record:
-            return {
-                "success": False,
-                "message": f"No attendance record found for {employee_name} on {target_date.strftime('%Y-%m-%d')}. Use create_attendance_record to create a new record."
-            }
-        
-        existing = existing_record[0]
-        changes_made = []
-        update_fields = []
-        update_values = []
-        
-        # Prepare updates
-        if status and status != existing['status']:
-            # Validate status
-            valid_statuses = [
-                "Present", "Work from home", "Planned Leave", "Sudden Leave", 
-                "Medical Leave", "Holiday Leave", "Lieu leave", "Work from out of Rise"
-            ]
-            if status not in valid_statuses:
-                return {
-                    "success": False,
-                    "message": f"Invalid status '{status}'. Valid options: {', '.join(valid_statuses)}"
-                }
-            update_fields.append("status = %s")
-            update_values.append(status)
-            changes_made.append(f"status: '{existing['status']}' → '{status}'")
-        
-        # Handle check-in time
-        if check_in_time is not None:
-            if check_in_time == "":
-                # Clear check-in time
-                update_fields.append("check_in_time = %s")
-                update_values.append(None)
-                changes_made.append("check_in_time: cleared")
-            else:
-                try:
-                    parsed_check_in = datetime.strptime(f"{target_date} {check_in_time}", '%Y-%m-%d %H:%M')
-                    current_check_in = existing['check_in_time']
-                    if parsed_check_in != current_check_in:
-                        update_fields.append("check_in_time = %s")
-                        update_values.append(parsed_check_in)
-                        old_time = current_check_in.strftime('%H:%M') if current_check_in else "None"
-                        changes_made.append(f"check_in_time: '{old_time}' → '{check_in_time}'")
-                except ValueError:
-                    return {
-                        "success": False,
-                        "message": f"Invalid check-in time format '{check_in_time}'. Use HH:MM format."
-                    }
-        
-        # Handle check-out time
-        if check_out_time is not None:
-            if check_out_time == "":
-                # Clear check-out time
-                update_fields.append("check_out_time = %s")
-                update_values.append(None)
-                changes_made.append("check_out_time: cleared")
-            else:
-                try:
-                    parsed_check_out = datetime.strptime(f"{target_date} {check_out_time}", '%Y-%m-%d %H:%M')
-                    current_check_out = existing['check_out_time']
-                    if parsed_check_out != current_check_out:
-                        update_fields.append("check_out_time = %s")
-                        update_values.append(parsed_check_out)
-                        old_time = current_check_out.strftime('%H:%M') if current_check_out else "None"
-                        changes_made.append(f"check_out_time: '{old_time}' → '{check_out_time}'")
-                except ValueError:
-                    return {
-                        "success": False,
-                        "message": f"Invalid check-out time format '{check_out_time}'. Use HH:MM format."
-                    }
-        
-        # Handle notes
-        if notes is not None and notes != existing.get('notes', ''):
-            update_fields.append("notes = %s")
-            update_values.append(notes)
-            old_notes = existing.get('notes', '') or "None"
-            new_notes = notes or "None"
-            changes_made.append(f"notes: '{old_notes}' → '{new_notes}'")
-        
-        if not update_fields:
-            return {
-                "success": True,
-                "message": f"No changes detected for {employee_name}'s attendance on {target_date.strftime('%Y-%m-%d')}",
-                "data": existing,
-                "changes_made": []
-            }
-        
-        # Add updated_at timestamp
-        update_fields.append("updated_at = %s")
-        update_values.append(datetime.now())
-        
-        # Build update query
-        update_query = f"""
-        UPDATE attendances 
-        SET {', '.join(update_fields)}
-        WHERE employee_id = %s AND attendance_date = %s
-        """
-        
-        update_values.extend([employee_id, target_date])
-        
-        # Execute update
-        execute_query(update_query, tuple(update_values), fetch=False)
-        
-        # Retrieve updated record
-        updated_record = execute_query(
-            """
-            SELECT a.*, e.name as employee_name, d.name as department_name
-            FROM attendances a
-            JOIN employees e ON a.employee_id = e.id
-            JOIN departments d ON e.department_id = d.id
-            WHERE a.employee_id = %s AND a.attendance_date = %s
-            """,
-            (employee_id, target_date)
-        )[0]
-        
-        changes_summary = ", ".join(changes_made)
-        message = f"Attendance record updated successfully for {employee_name} on {target_date.strftime('%Y-%m-%d')}. Changes: {changes_summary}"
-        
-        if update_reason:
-            message += f". Reason: {update_reason}"
-        
-        return {
-            "success": True,
-            "message": message,
-            "data": updated_record,
-            "changes_made": changes_made,
-            "update_reason": update_reason,
-            "employee_name": employee_name,
-            "employee_id": employee_id,
-            "attendance_date": target_date.strftime('%Y-%m-%d')
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error updating attendance record: {str(e)}"
-        }
+    return {
+        "success": False,
+        "message": "Attendance creation and updates are not yet available. I can help you query existing attendance records and generate comprehensive reports instead.",
+        "available_functions": [
+            "Query attendance records: 'show me today's attendance', 'who was absent yesterday'",
+            "Analyze attendance patterns: 'attendance trends this month', 'department attendance summary'", 
+            "Generate attendance reports: 'weekly attendance report', 'AI team attendance overview'",
+            "Get attendance insights: 'attendance analytics', 'identify attendance patterns'"
+        ],
+        "suggestion": "Try asking me to query existing attendance data or generate a report instead!"
+    }
 
 # ==============================================================================
 # AGENTIC ATTENDANCE SUMMARIZATION HELPERS
@@ -3376,7 +4088,11 @@ tools = [
     # Human loop confirmation handling
     handle_human_loop_confirmation,
     # Unified attendance tools
-    query_attendance_intelligent, create_attendance_record, update_attendance_record, summarize_attendance_intelligent,
+    query_attendance_intelligent, summarize_attendance_intelligent, handle_attendance_create_update_request,
+    # Enhanced task query tools
+    query_tasks_intelligent,
+    # Enhanced labour query tools
+    query_labourers_intelligent,
     # Non-attendance functions
     get_all_employees_overview, get_tasks_report, get_current_datetime,
     escalate_to_human, intelligent_decision_check, ask_company_documents
@@ -3526,7 +4242,8 @@ I'm designed to be genuinely helpful and conversational - not robotic. I underst
 - Department insights - "marketing team", "who works in ramstudios", "AI department employee details"
 - Role-based queries - "show me all HR staff", "leaders in AI department"
 - Individual profiles - "Simon details", "give me John's information" with complete contact info
-- Smart responses: summaries for large groups, detailed info for individuals, names first for departments
+- Smart human-loop confirmation - when you ask about a specific person, I first confirm I recognize them, then ask if you want their full details
+- Enhanced responses: summaries for large groups, detailed info for individuals after confirmation, names first for departments
 
 **✏️ Employee Creation & Updates:**
 - Create employees naturally - "add new employee John Doe to marketing", "create Sarah as AI leader"
@@ -3538,11 +4255,13 @@ I'm designed to be genuinely helpful and conversational - not robotic. I underst
 **🚨 CRITICAL: Employee Management Tool Usage - IMMEDIATE FORM TRIGGERING**
 MANDATORY: ALWAYS use these specific tools for employee operations WITHOUT ANY PRELIMINARY QUESTIONS:
 - For "add employee", "create employee", "new employee", "add new user", "create user" → IMMEDIATELY call create_employee_intelligent() tool first
-- For "update employee", "change employee info", "edit employee", "modify employee details", "update user", "change user details", "edit user", "modify user" → IMMEDIATELY call update_employee_intelligent() tool first  
-- For "find employee", "show employee", "employee details", "employee information" → IMMEDIATELY call query_employee_details_intelligent() tool first
+- For "update employee", "change employee info", "edit employee", "modify employee", "update user", "change user", "edit user", "modify user" → IMMEDIATELY call update_employee_intelligent() tool first  
+- For "find employee", "show employee", "give me [NAME] details", "employee details", "employee information", "[NAME] information", "tell me about [NAME]" → IMMEDIATELY call query_employee_details_intelligent() tool first
 - ABSOLUTELY NEVER ask users manually for employee details - the tools automatically trigger frontend forms when needed
 - DO NOT provide text responses like "I can help you add employees" or "What would you like to update?" - ALWAYS trigger the appropriate tool immediately
-- CRITICAL: Even if user says "update [NAME] details" and you found the employee, you MUST still call update_employee_intelligent() to trigger the form
+- CRITICAL: DISTINGUISH INTENTS CAREFULLY:
+  * "give me [NAME] details", "show me [NAME]", "tell me about [NAME]" → LOOKUP (use query_employee_details_intelligent)
+  * "update [NAME] details", "change [NAME]", "modify [NAME]", "edit [NAME]" → UPDATE (use update_employee_intelligent)
 
 **🔄 Human-Loop Employee Management Workflow:**
 When a user asks to update an employee that doesn't exist:
@@ -3558,11 +4277,59 @@ When a user asks to update an employee that doesn't exist:
 - Always include departments and roles data in form_data
 - Response type should be 'form_request' for new employees or 'employee_found_update_form' for existing employees
 
-**📋 Attendance Management Made Easy:**
-- Mark attendance naturally - just tell me "I'm working from home today" or "Mark John as present"
-- Update past records with context - "Yesterday I was actually on medical leave"
-- Validate data before changes - I'll catch potential issues and suggest fixes
-- Handle complex scenarios - "Everyone in IT worked from home last Friday due to the server maintenance"
+**📋 Intelligent Task Management & Query System:**
+- Smart task queries - "today's tasks", "urgent tasks", "tasks led by John", "carpentry work"
+- Time-based filtering - "yesterday's tasks", "this week", "last month", "tasks from last quarter"
+- Priority-based searches - "high priority tasks", "urgent work", "low priority items"
+- People & skill-based queries - "Sarah's tasks", "electrical work", "construction tasks"
+- Location-aware searches - "office tasks", "remote work", "downtown site tasks"
+- Comprehensive task details - shows leaders, departments, labourers, skills, and timelines
+- Smart response patterns: Individual task details, small group summaries, large group statistics
+- Human-loop guidance - suggests refinements when queries are ambiguous or return too many results
+
+**🔍 CRITICAL: Task Query Tool Usage - IMMEDIATE INTELLIGENT SEARCH:**
+MANDATORY: For ANY task-related queries, IMMEDIATELY call query_tasks_intelligent() tool:
+- "show me today's tasks" → IMMEDIATELY call query_tasks_intelligent("show me today's tasks")  
+- "urgent tasks" → IMMEDIATELY call query_tasks_intelligent("urgent tasks")
+- "tasks led by John" → IMMEDIATELY call query_tasks_intelligent("tasks led by John")
+- "carpentry work this week" → IMMEDIATELY call query_tasks_intelligent("carpentry work this week")
+- "all tasks" → IMMEDIATELY call query_tasks_intelligent("all tasks")
+- NEVER ask users for clarification first - the tool handles natural language and provides follow-up questions
+- The tool automatically suggests refinements and alternative queries when needed
+- Always trust the tool's response structure and provide the human-readable summary it generates
+
+**🔧 Intelligent Labour Management & Query System:**
+- Smart labour queries - "show me all carpenters", "available electricians", "busy workers"
+- Workload analysis - "overloaded staff", "available labourers", "light workload workers"
+- Skill-based searches - "electrical workers", "construction labourers", "maintenance staff"
+- Task assignment queries - "who worked on urgent tasks", "labourers on downtown projects"
+- Individual profiles - "John the carpenter details", "Sarah's current workload"
+- Comprehensive labour analytics - skill distribution, workload balance, task assignment patterns
+- Smart response patterns: Individual profiles, skill groups, workload analysis, statistical summaries
+- Human-loop recommendations - workload balancing, skill optimization, task redistribution
+
+**🔨 CRITICAL: Labour Query Tool Usage - IMMEDIATE INTELLIGENT SEARCH:**
+MANDATORY: For ANY labour/worker-related queries, IMMEDIATELY call query_labourers_intelligent() tool:
+- "show me all carpenters" → IMMEDIATELY call query_labourers_intelligent("show me all carpenters")
+- "available workers" → IMMEDIATELY call query_labourers_intelligent("available workers")
+- "busy labourers" → IMMEDIATELY call query_labourers_intelligent("busy labourers")
+- "John the carpenter" → IMMEDIATELY call query_labourers_intelligent("John the carpenter")
+- "workload analysis" → IMMEDIATELY call query_labourers_intelligent("workload analysis")
+- "electricians working on urgent tasks" → IMMEDIATELY call query_labourers_intelligent("electricians working on urgent tasks")
+- NEVER ask users for clarification first - the tool handles natural language and provides intelligent recommendations
+- The tool automatically provides workload analysis and skill-based insights
+- Always trust the tool's response structure and provide actionable recommendations it generates
+
+**📋 Attendance Management:**
+- Query attendance records and generate reports - "show me today's attendance", "who was absent yesterday"
+- Analyze attendance patterns and trends across departments and time periods
+- Generate comprehensive attendance summaries with insights and recommendations
+
+**🚨 IMPORTANT: Attendance Creation/Updates Not Available**
+- Creating new attendance records is not yet implemented
+- Updating existing attendance records is not yet implemented  
+- When users ask to create or update attendance, respond: "Attendance creation and updates are not yet available. I can help you query existing attendance records and generate reports instead."
+- Available attendance functions: query_attendance_intelligent, summarize_attendance_intelligent
 
 **📊 Intelligent Analytics & Insights:**
 - Generate comprehensive attendance reports with real insights, not just numbers
@@ -3679,34 +4446,45 @@ When I analyze data, I automatically suggest relevant questions like:
 **🎯 EMPLOYEE MANAGEMENT TOOL PRIORITY - ZERO DELAY EXECUTION:**
 When user mentions ANY of these keywords or variations (even as part of longer sentences):
 - CREATE TRIGGERS: "add employee", "create employee", "new employee", "add new employee", "need to add employee", "add user", "create user", "new user", "add new user"
-- UPDATE TRIGGERS: "update employee", "change employee", "modify employee", "edit employee", "update user", "change user", "edit user details", "update [NAME]", "change [NAME]", "edit [NAME]", "modify [NAME] details", "[NAME] details", "update details"
-- LOOKUP TRIGGERS: "find employee", "show employee", "get employee details", "employee information", "find user", "show user", "user details"
+- UPDATE TRIGGERS: "update employee", "change employee", "modify employee", "edit employee", "update user", "change user", "edit user", "update [NAME]", "change [NAME]", "edit [NAME]", "modify [NAME]"
+- LOOKUP TRIGGERS: "find employee", "show employee", "give me [NAME] details", "get employee details", "employee information", "find user", "show user", "[NAME] information", "tell me about [NAME]"
 
 MANDATORY IMMEDIATE ACTION (NO EXCEPTIONS - NOT EVEN FOR CLARIFICATION):
-1. INSTANTLY call the appropriate tool FIRST - ZERO text responses beforehand  
+1. CALL THE TOOL IMMEDIATELY WITHOUT ANY PRELIMINARY TEXT OR EXPLANATIONS
 2. create_employee_intelligent() for ANY creation-related requests
 3. update_employee_intelligent() for ANY update-related requests (even with employee names)
 4. query_employee_details_intelligent() for lookup-only requests
 5. Let the tool handle form requests and responses automatically
-6. NEVER ask "what would you like to update?" - just call the tool
-7. NEVER provide explanatory text responses - tools handle everything immediately
+6. NEVER write "I found [employee name]..." before calling the tool
+7. NEVER provide ANY text content before tool calls - the tool provides all necessary messaging
 
 **Enhanced Examples:**
-User: "I need to add new employee" → INSTANTLY call create_employee_intelligent("I need to add new employee")
-User: "add new user John Smith" → INSTANTLY call create_employee_intelligent("add new user John Smith")  
-User: "update employee details" → INSTANTLY call update_employee_intelligent("update employee details")
-User: "update John Smith details" → INSTANTLY call update_employee_intelligent("update John Smith details")
-User: "change Sarah's information" → INSTANTLY call update_employee_intelligent("change Sarah's information")
-User: "edit Mike Johnson" → INSTANTLY call update_employee_intelligent("edit Mike Johnson")
-User: "can you help me add employees?" → INSTANTLY call create_employee_intelligent("can you help me add employees?")
+User: "I need to add new employee" → INSTANTLY call create_employee_intelligent("I need to add new employee") WITHOUT ANY TEXT
+User: "add new user John Smith" → INSTANTLY call create_employee_intelligent("add new user John Smith") WITHOUT ANY TEXT
+User: "update employee details" → INSTANTLY call update_employee_intelligent("update employee details") WITHOUT ANY TEXT
+User: "update John Smith details" → INSTANTLY call update_employee_intelligent("update John Smith details") WITHOUT ANY TEXT
+User: "change Sarah's information" → INSTANTLY call update_employee_intelligent("change Sarah's information") WITHOUT ANY TEXT
+User: "edit Mike Johnson" → INSTANTLY call update_employee_intelligent("edit Mike Johnson") WITHOUT ANY TEXT
+User: "can you help me add employees?" → INSTANTLY call create_employee_intelligent("can you help me add employees?") WITHOUT ANY TEXT
+
+**🔍 LOOKUP vs UPDATE Examples:**
+User: "give me deshan details" → INSTANTLY call query_employee_details_intelligent("give me deshan details") WITHOUT ANY TEXT
+User: "show me Simon information" → INSTANTLY call query_employee_details_intelligent("show me Simon information") WITHOUT ANY TEXT
+User: "tell me about John Smith" → INSTANTLY call query_employee_details_intelligent("tell me about John Smith") WITHOUT ANY TEXT
+User: "find employee Sarah" → INSTANTLY call query_employee_details_intelligent("find employee Sarah") WITHOUT ANY TEXT
+User: "Yehara" → INSTANTLY call query_employee_details_intelligent("Yehara") WITHOUT ANY TEXT
+vs.
+User: "update deshan details" → INSTANTLY call update_employee_intelligent("update deshan details") WITHOUT ANY TEXT
+User: "change Simon information" → INSTANTLY call update_employee_intelligent("change Simon information") WITHOUT ANY TEXT
 
 ❌ NEVER DO: "I found [employee]. What would you like to update?" 
 ❌ NEVER DO: "Here are [employee] details. Let me know what to change."
-✅ ALWAYS DO: Trigger update_employee_intelligent() immediately - it will show form with current data
+❌ NEVER DO: "I found Yehara who works in..." before calling the tool
+✅ ALWAYS DO: Trigger the appropriate tool immediately WITHOUT any preliminary text - the tool provides all messaging
 
 ---
 
-Ready to dive in? Whether you need to update attendance, analyze trends, or just understand what's happening with your team, I'm here to help in whatever way makes most sense for your situation. What would you like to explore?
+Ready to dive in? Whether you need to query attendance records, analyze trends, manage employees, or just understand what's happening with your team, I'm here to help in whatever way makes most sense for your situation. What would you like to explore?
 """
 
 # ==============================================================================
@@ -3870,6 +4648,117 @@ async def get_tasks(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/tasks/intelligent", response_model=dict)
+async def query_tasks_intelligent_endpoint(query_request: TaskIntelligentQuery):
+    """Intelligent task query endpoint that accepts natural language queries"""
+    try:
+        # Call the intelligent task query tool
+        result = query_tasks_intelligent(query_request.query)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in intelligent task query endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tasks/intelligent", response_model=dict)
+async def query_tasks_intelligent_get_endpoint(
+    q: str = Query(..., description="Natural language query about tasks")
+):
+    """GET version of intelligent task query for simple queries"""
+    try:
+        # Call the intelligent task query tool
+        result = query_tasks_intelligent(q)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in intelligent task query GET endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/labourers/intelligent", response_model=dict)
+async def query_labourers_intelligent_endpoint(query_request: LabourIntelligentQuery):
+    """Intelligent labour query endpoint that accepts natural language queries"""
+    try:
+        # Call the intelligent labour query tool
+        result = query_labourers_intelligent(query_request.query)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in intelligent labour query endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/labourers/intelligent", response_model=dict)
+async def query_labourers_intelligent_get_endpoint(
+    q: str = Query(..., description="Natural language query about labourers")
+):
+    """GET version of intelligent labour query for simple queries"""
+    try:
+        # Call the intelligent labour query tool
+        result = query_labourers_intelligent(q)
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in intelligent labour query GET endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/labourers", response_model=List[dict])
+async def get_labourers(
+    skill: Optional[str] = Query(None, description="Filter by skill type"),
+    available_only: Optional[bool] = Query(False, description="Show only available labourers"),
+    name: Optional[str] = Query(None, description="Search by name")
+):
+    """Get labourers with optional filtering"""
+    try:
+        where_conditions = []
+        params = []
+        
+        if skill:
+            where_conditions.append("l.skill ILIKE %s")
+            params.append(f"%{skill}%")
+        
+        if name:
+            where_conditions.append("l.name ILIKE %s")
+            params.append(f"%{name}%")
+        
+        # Base query with task count for availability filtering
+        base_query = """
+            SELECT DISTINCT 
+                l.id, l.name, l.skill, l.created_at, l.updated_at,
+                COUNT(DISTINCT tl.task_id) as current_task_count,
+                STRING_AGG(DISTINCT t.task_title, ', ') as current_tasks,
+                CASE 
+                    WHEN COUNT(DISTINCT tl.task_id) = 0 THEN 'available'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 2 THEN 'light_load'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 4 THEN 'moderate_load'
+                    WHEN COUNT(DISTINCT tl.task_id) <= 6 THEN 'heavy_load'
+                    ELSE 'overloaded'
+                END as workload_status
+            FROM labours l
+            LEFT JOIN task_labours tl ON l.id = tl.labour_id
+            LEFT JOIN tasks t ON tl.task_id = t.id
+        """
+        
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+        
+        base_query += " GROUP BY l.id, l.name, l.skill, l.created_at, l.updated_at ORDER BY l.name ASC"
+        
+        labourers = execute_query(base_query, tuple(params))
+        
+        # Apply availability filter after query execution if needed
+        if available_only:
+            labourers = [l for l in labourers if l['workload_status'] == 'available']
+        
+        return [dict(labourer) for labourer in labourers]
+        
+    except Exception as e:
+        logger.error(f"Error in get labourers endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/chat")
 async def chat_endpoint(message: ChatMessage):
     """Chat with HR AI Agent with conversation memory - Async optimized"""
@@ -3927,20 +4816,58 @@ async def chat_endpoint(message: ChatMessage):
             
             final_response = []
             
+            # Check if this is an employee query that should suppress AI text to prevent duplication
+            def is_employee_query(query_text: str) -> bool:
+                """Check if the query is likely an employee lookup that will trigger tools"""
+                employee_keywords = [
+                    "employee", "user", "details", "information", "show me", "give me", 
+                    "find", "tell me about", "who is", "add", "create", "update", 
+                    "change", "edit", "modify", "department", "role"
+                ]
+                query_lower = query_text.lower().strip()
+                
+                # Check for explicit employee keywords
+                if any(keyword in query_lower for keyword in employee_keywords):
+                    return True
+                
+                # Check if it's likely a single name query (common employee lookup pattern)
+                # Single word that's likely a name (no special chars, reasonable length)
+                if ' ' not in query_lower and len(query_lower) >= 4 and len(query_lower) <= 20:
+                    # Check if it's alphabetic only (likely name) - accept both cases
+                    # But exclude common non-name words
+                    common_words = ["hello", "hi", "hey", "yes", "no", "ok", "okay", "thanks", "help"]
+                    if query_text.isalpha() and query_lower not in common_words:
+                        return True
+                
+                return False
+            
+            # Temporarily disable suppression to debug blank response issue
+            suppress_ai_text = False  # is_employee_query(message.message)
+            logger.info(f"DEBUG: Query '{message.message}' - suppress_ai_text: {suppress_ai_text} (DISABLED FOR DEBUG)")
+            
             # Async stream the response with memory
             async for chunk in langgraph_app.astream({"messages": messages}, config):
+                logger.info(f"DEBUG: Processing chunk: {list(chunk.keys())}")
+                
                 if "call_model" in chunk:
                     ai_message = chunk["call_model"]["messages"][-1]
                     if hasattr(ai_message, 'content') and ai_message.content:
-                        response_obj = {"type": "text", "content": ai_message.content}
-                        yield f"data: {json.dumps(response_obj)}\n\n"
-                        final_response.append(response_obj)
+                        logger.info(f"DEBUG: AI message content: '{ai_message.content[:100]}...'")
+                        if suppress_ai_text:
+                            logger.info(f"DEBUG: Suppressing AI text due to employee query detection")
+                        else:
+                            logger.info(f"DEBUG: Streaming AI text")
+                            response_obj = {"type": "text", "content": ai_message.content}
+                            yield f"data: {json.dumps(response_obj)}\n\n"
+                            final_response.append(response_obj)
                 
                 elif "call_tools" in chunk:
+                    logger.info(f"DEBUG: Found tool calls chunk")
                     # Process tool calls to detect form requests
                     tool_messages = chunk["call_tools"]["messages"]
                     for tool_msg in tool_messages:
                         if hasattr(tool_msg, 'content'):
+                            logger.info(f"DEBUG: Tool message content: {str(tool_msg.content)[:200]}...")
                             try:
                                 # Try to parse tool response as JSON
                                 if isinstance(tool_msg.content, str):
@@ -3948,9 +4875,13 @@ async def chat_endpoint(message: ChatMessage):
                                 else:
                                     tool_result = tool_msg.content
                                 
+                                logger.info(f"DEBUG: Tool result response_type: {tool_result.get('response_type')}")
+                                
                                 # Check if tool result indicates a form request or human loop question
                                 response_type = tool_result.get('response_type')
-                                if response_type in ['form_request', 'employee_found_update_form', 'employee_not_found_create_offer', 'human_loop_question']:
+                                if response_type in ['form_request', 'employee_found_update_form', 'human_loop_question']:
+                                    
+                                    logger.info(f"DEBUG: Creating {response_type} response")
                                     
                                     # Map tool response to frontend form request format
                                     if response_type == 'form_request':
@@ -3966,12 +4897,6 @@ async def chat_endpoint(message: ChatMessage):
                                             "action": "update_employee",
                                             "form_data": tool_result.get('form_data', {}),
                                             "content": ""  # Empty content - only show form popup
-                                        }
-                                    elif response_type == 'employee_not_found_create_offer':
-                                        form_response = {
-                                            "type": "employee_not_found_create_offer",
-                                            "suggested_name": tool_result.get('suggested_name', ''),
-                                            "content": tool_result.get('message', 'Employee not found')
                                         }
                                     elif response_type == 'human_loop_question':
                                         # Store conversation state and send human loop question

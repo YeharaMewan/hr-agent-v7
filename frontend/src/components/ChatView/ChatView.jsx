@@ -20,47 +20,46 @@ const ChatView = ({ messages, setMessages }) => {
 
   // Enhanced employee management intent detection
   const detectEmployeeManagementIntent = (message) => {
-    const messageLower = message.toLowerCase();
+    const messageLower = message.toLowerCase().trim();
     
+    // First check for explicit lookup patterns - these should NEVER trigger forms
+    const explicitLookupTriggers = [
+      'give me ', 'show me ', 'tell me about ', 'find ', 'who is ',
+      'display ', 'get ', 'information about ', 'details about ',
+      'information for ', 'details for ', 'show ', 'tell me '
+    ];
+    
+    const isExplicitLookup = explicitLookupTriggers.some(trigger => 
+      messageLower.startsWith(trigger) || messageLower.includes(trigger)
+    );
+    
+    // If it's clearly a lookup request, return lookup intent
+    if (isExplicitLookup) {
+      return { type: 'lookup', action: 'query_employee' };
+    }
+    
+    // Creation triggers - should trigger forms
     const creationTriggers = [
       'add employee', 'create employee', 'new employee', 'add new employee', 
       'add user', 'create user', 'new user', 'add new user',
       'need to add employee', 'can you add employee', 'help me add employee'
     ];
     
-    const updateTriggers = [
+    // Update triggers - should trigger forms, but be more specific
+    const explicitUpdateTriggers = [
       'update employee', 'change employee', 'modify employee', 'edit employee',
       'update user', 'change user', 'edit user', 'modify user',
-      'employee details', 'user details', 'update details',
-      // Enhanced patterns for specific name updates
-      'update .+? details', 'change .+? information', 'edit .+? details',
-      'modify .+? details', '.+? details', 'update .+?', 'edit .+?'
+      'update details', 'change details', 'modify details', 'edit details',
+      'update information', 'change information', 'modify information'
     ];
     
-    const lookupTriggers = [
-      'find employee', 'show employee', 'get employee', 'employee information',
-      'find user', 'show user', 'get user', 'user information'
-    ];
-
     const isCreation = creationTriggers.some(trigger => messageLower.includes(trigger));
-    
-    // Enhanced update detection with regex patterns
-    const isUpdate = updateTriggers.some(trigger => {
-      if (trigger.includes('.+?')) {
-        // Use regex for patterns with wildcards
-        const regexPattern = trigger.replace(/\.\+\?/g, '[\\w\\s]+');
-        const regex = new RegExp(regexPattern, 'i');
-        return regex.test(message);
-      }
-      return messageLower.includes(trigger);
-    });
-    
-    const isLookup = lookupTriggers.some(trigger => messageLower.includes(trigger));
+    const isExplicitUpdate = explicitUpdateTriggers.some(trigger => messageLower.includes(trigger));
     
     if (isCreation) return { type: 'create', action: 'create_employee' };
-    if (isUpdate) return { type: 'update', action: 'update_employee' };
-    if (isLookup) return { type: 'lookup', action: 'query_employee' };
+    if (isExplicitUpdate) return { type: 'update', action: 'update_employee' };
     
+    // For ambiguous cases, default to lookup rather than update
     return null;
   };
 
@@ -580,10 +579,21 @@ const ChatView = ({ messages, setMessages }) => {
             updateMessageWithText(loadingMessage.id, data.content);
           } else if (data.type === 'form_request') {
             formRequestReceived = true;
-            // Handle form request - show employee form modal
-            handleFormRequest(data);
-            // Remove the loading message instead of updating it with text
-            setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
+            
+            // Safety check: Validate form request is legitimate
+            const isValidFormRequest = validateFormRequest(data, messageText);
+            
+            if (isValidFormRequest) {
+              // Handle legitimate form request - show employee form modal
+              console.log('Valid form request received:', data);
+              handleFormRequest(data);
+              // Remove the loading message instead of updating it with text
+              setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
+            } else {
+              // Invalid form request - treat as regular response
+              console.warn('Invalid form request blocked:', data, 'for message:', messageText);
+              updateMessageWithText(loadingMessage.id, data.message || 'Information retrieved successfully.');
+            }
           } else if (data.type === 'employee_not_found_create_offer') {
             formRequestReceived = true;
             // Handle employee not found - show create offer and potentially open form
@@ -606,7 +616,8 @@ const ChatView = ({ messages, setMessages }) => {
           ));
           
           // Fallback: If we detected employee management intent but no form was triggered
-          if (shouldTriggerEmployeeForm && !formRequestReceived) {
+          // Only trigger fallback for create/update requests, NOT for lookup requests
+          if (shouldTriggerEmployeeForm && !formRequestReceived && shouldTriggerEmployeeForm.type !== 'lookup') {
             console.log('Fallback form trigger detected for:', shouldTriggerEmployeeForm);
             triggerFallbackEmployeeForm(shouldTriggerEmployeeForm, messageText);
           }
@@ -673,6 +684,64 @@ const ChatView = ({ messages, setMessages }) => {
       }
       return msg;
     }));
+  };
+
+  // Form request validation to prevent unwanted popups
+  const validateFormRequest = (data, originalMessage) => {
+    if (!data || !originalMessage) return false;
+    
+    const messageLower = originalMessage.toLowerCase().trim();
+    
+    // Define lookup keywords that should NEVER trigger forms
+    const strictLookupKeywords = [
+      'give me', 'show me', 'tell me about', 'who is', 'find', 
+      'display', 'get', 'information about', 'details about',
+      'information for', 'details for', 'tell me', 'show', 'display'
+    ];
+    
+    // Define update keywords that SHOULD trigger forms
+    const updateKeywords = [
+      'update', 'change', 'modify', 'edit', 'alter', 'revise'
+    ];
+    
+    // Check if this is clearly a lookup request
+    const isStrictLookupRequest = strictLookupKeywords.some(keyword => 
+      messageLower.startsWith(keyword + ' ') || messageLower.includes(' ' + keyword + ' ')
+    );
+    
+    // Check if this is clearly an update request  
+    const isUpdateRequest = updateKeywords.some(keyword =>
+      messageLower.includes(keyword)
+    );
+    
+    // STRICT RULE: If it starts with or clearly contains lookup keywords, NEVER show forms
+    if (isStrictLookupRequest) {
+      console.log('Blocking form for strict lookup request:', messageLower);
+      return false;
+    }
+    
+    // If it's clearly an update request, allow the form
+    if (isUpdateRequest) {
+      console.log('Allowing form for update request:', messageLower);
+      return true;
+    }
+    
+    // Additional check: if the response contains employee information, it's likely a successful lookup
+    if (data.message && data.message.includes('details') && !isUpdateRequest) {
+      console.log('Blocking form - response contains employee details:', messageLower);
+      return false;
+    }
+    
+    // For create operations, be more restrictive
+    const action = data.action || '';
+    if (action === 'create_employee') {
+      // Only allow create forms if it's explicitly a create request
+      const isCreateRequest = messageLower.includes('create') || messageLower.includes('add') || messageLower.includes('new');
+      return isCreateRequest;
+    }
+    
+    // Default: be restrictive - don't show forms unless explicitly requested
+    return false;
   };
 
   // Employee form handling functions
