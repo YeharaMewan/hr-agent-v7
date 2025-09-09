@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service Letter - {{ name }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 0.75in;
+            @top-center {
+                content: "";
+            }
+            @bottom-right {
+                content: "Page " counter(page) " of " counter(pages);
+                font-size: 9pt;
+                color: #666;
+            }
+        }
+        
+        body {
+            font-family: 'Times New Roman', serif;
+            font-size: 12pt;
+            line-height: 1.5;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .letterhead {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 3px solid #2c5aa0;
+        }
+        
+        .company-logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 15px;
+            background: #2c5aa0;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24pt;
+            font-weight: bold;
+        }
+        
+        .company-name {
+            font-size: 20pt;
+            font-weight: bold;
+            color: #2c5aa0;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+        
+        .company-info {
+            font-size: 10pt;
+            color: #666;
+            line-height: 1.3;
+        }
+        
+        .document-header {
+            text-align: center;
+            margin: 30px 0;
+        }
+        
+        .document-title {
+            font-size: 16pt;
+            font-weight: bold;
+            text-decoration: underline;
+            margin-bottom: 10px;
+            color: #2c5aa0;
+        }
+        
+        .document-ref {
+            font-size: 10pt;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        
+        .date-line {
+            text-align: right;
+            margin-bottom: 30px;
+            font-weight: bold;
+        }
+        
+        .recipient-section {
+            margin-bottom: 25px;
+        }
+        
+        .recipient-label {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .salutation {
+            margin-bottom: 25px;
+            font-weight: bold;
+        }
+        
+        .letter-body {
+            text-align: justify;
+            margin-bottom: 30px;
+        }
+        
+        .letter-body p {
+            margin-bottom: 18px;
+            text-indent: 0;
+        }
+        
+        .employee-details-section {
+            background: linear-gradient(135deg, #f8f9ff 0%, #e3e7ff 100%);
+            border-left: 4px solid #2c5aa0;
+            padding: 20px;
+            margin: 25px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .employee-details-title {
+            font-size: 13pt;
+            font-weight: bold;
+            color: #2c5aa0;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .employee-details-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+        
+        .employee-details-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #d0d7ff;
+            vertical-align: top;
+        }
+        
+        .employee-details-table td:first-child {
+            font-weight: bold;
+            width: 35%;
+            color: #2c5aa0;
+            background: rgba(44, 90, 160, 0.05);
+        }
+        
+        .employee-details-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .performance-note {
+            background: #f0f8ff;
+            border: 1px solid #b3d9ff;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            font-style: italic;
+        }
+        
+        .closing-section {
+            margin-top: 40px;
+        }
+        
+        .closing-text {
+            margin-bottom: 30px;
+        }
+        
+        .signature-section {
+            margin-top: 60px;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .signature-block {
+            text-align: center;
+            width: 200px;
+        }
+        
+        .signature-line {
+            border-bottom: 2px solid #333;
+            height: 50px;
+            margin-bottom: 8px;
+            position: relative;
+        }
+        
+        .signature-title {
+            font-size: 11pt;
+            font-weight: bold;
+            color: #2c5aa0;
+            margin-bottom: 3px;
+        }
+        
+        .signature-name {
+            font-size: 10pt;
+            color: #666;
+        }
+        
+        .signature-date {
+            font-size: 10pt;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .footer {
+            clear: both;
+            margin-top: 60px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            font-size: 9pt;
+            color: #666;
+            text-align: center;
+        }
+        
+        .verification-note {
+            background: #fff8dc;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-top: 20px;
+            border-radius: 3px;
+            font-size: 9pt;
+            color: #666;
+        }
+        
+        .stamp-area {
+            position: absolute;
+            right: 50px;
+            bottom: 80px;
+            width: 100px;
+            height: 100px;
+            border: 2px dashed #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8pt;
+            color: #999;
+            text-align: center;
+        }
+        
+        @media print {
+            body { margin: 0; }
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Letterhead -->
+    <div class="letterhead">
+        <div class="company-logo">RTV</div>
+        <div class="company-name">{{ company_name | default('Rise Tech Village') }}</div>
+        <div class="company-info">
+            {{ company_address | default('123 Tech Street, Innovation City, IC 12345') }}<br>
+            Phone: {{ company_phone | default('+1 (555) 123-4567') }} | Email: {{ company_email | default('hr@risetechvillage.com') }}
+        </div>
+    </div>
+    
+    <!-- Document Header -->
+    <div class="document-header">
+        <div class="document-title">SERVICE LETTER</div>
+        <div class="document-ref">Ref No: SL/{{ id | default('001') }}/{{ current_date | format_date('%Y') }}</div>
+    </div>
+    
+    <!-- Date -->
+    <div class="date-line">
+        Date: {{ current_date }}
+    </div>
+    
+    <!-- Recipient -->
+    <div class="recipient-section">
+        <div class="recipient-label">{{ purpose | default('To Whom It May Concern') }}</div>
+    </div>
+    
+    <!-- Salutation -->
+    <div class="salutation">
+        Dear Sir/Madam,
+    </div>
+    
+    <!-- Letter Body -->
+    <div class="letter-body">
+        <p>
+            This is to certify that <strong>{{ name }}</strong> was employed with {{ company_name | default('Rise Tech Village') }} 
+            as a <strong>{{ formatted_role | default('Employee') }}</strong> in the <strong>{{ department_name | default('General') }}</strong> department.
+        </p>
+        
+        <p>
+            During the period of employment from <strong>{{ joining_date }}</strong> to <strong>{{ current_date }}</strong>, 
+            a total service duration of <strong>{{ service_duration }}</strong>, {{ name }} demonstrated professionalism, 
+            dedication, and competence in all assigned responsibilities.
+        </p>
+    </div>
+    
+    <!-- Employee Details -->
+    <div class="employee-details-section">
+        <div class="employee-details-title">EMPLOYEE DETAILS</div>
+        <table class="employee-details-table">
+            <tr>
+                <td>Full Name:</td>
+                <td>{{ name }}</td>
+            </tr>
+            <tr>
+                <td>Employee ID:</td>
+                <td>EMP{{ id | default('001') | string.zfill(4) }}</td>
+            </tr>
+            <tr>
+                <td>Designation:</td>
+                <td>{{ formatted_role | default('Employee') }}</td>
+            </tr>
+            <tr>
+                <td>Department:</td>
+                <td>{{ department_name | default('General') }}</td>
+            </tr>
+            <tr>
+                <td>Email Address:</td>
+                <td>{{ email | default('N/A') }}</td>
+            </tr>
+            <tr>
+                <td>Employment Period:</td>
+                <td>{{ joining_date }} to {{ current_date }}</td>
+            </tr>
+            <tr>
+                <td>Service Duration:</td>
+                <td>{{ service_duration }}</td>
+            </tr>
+            <tr>
+                <td>Employment Status:</td>
+                <td>{% if is_active %}Active{% else %}Completed{% endif %}</td>
+            </tr>
+        </table>
+    </div>
+    
+    <!-- Performance Note -->
+    <div class="performance-note">
+        <strong>Performance Note:</strong> {{ name }} maintained excellent professional standards throughout the employment period 
+        and completed all assigned tasks satisfactorily. {{ name }} worked collaboratively with team members and contributed 
+        positively to the organization's objectives.
+    </div>
+    
+    <!-- Closing -->
+    <div class="closing-section">
+        <div class="closing-text">
+            <p>
+                We wish {{ name }} all the best for future endeavors. This letter is issued upon request for 
+                {{ purpose | lower | default('official purposes') }}.
+            </p>
+            
+            <p>
+                Should you require any additional information or clarification, please feel free to contact our 
+                HR department at {{ company_email | default('hr@risetechvillage.com') }} or {{ company_phone | default('+1 (555) 123-4567') }}.
+            </p>
+        </div>
+    </div>
+    
+    <!-- Signature Section -->
+    <div class="signature-section">
+        <div class="signature-block">
+            <div class="signature-line"></div>
+            <div class="signature-title">HR Manager</div>
+            <div class="signature-name">Human Resources</div>
+            <div class="signature-date">Date: {{ current_date }}</div>
+        </div>
+        
+        <div class="signature-block">
+            <div class="signature-line"></div>
+            <div class="signature-title">Authorized Signatory</div>
+            <div class="signature-name">{{ company_name | default('Rise Tech Village') }}</div>
+            <div class="signature-date">Date: {{ current_date }}</div>
+        </div>
+    </div>
+    
+    <!-- Official Stamp Area -->
+    <div class="stamp-area">
+        OFFICIAL<br>STAMP
+    </div>
+    
+    <!-- Footer -->
+    <div class="footer">
+        <div class="verification-note">
+            <strong>Document Verification:</strong> This is an electronically generated document. 
+            For verification, please contact {{ company_name | default('Rise Tech Village') }} HR Department.
+            Document ID: {{ id | default('SL001') }} | Generated on: {{ current_date }}
+        </div>
+        
+        <p style="margin-top: 15px;">
+            <strong>{{ company_name | default('Rise Tech Village') }}</strong> - Building Tomorrow's Technology Today
+        </p>
+    </div>
+</body>
+</html>

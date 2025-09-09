@@ -9,17 +9,35 @@ services:
       - ./backend/.env
     environment:
       - PYTHONPATH=/app
+      - DOCKER_CONTAINER=true
+    volumes:
+      # Persistent storage for generated documents
+      - ./backend/storage:/app/storage
+      # Template files (if you want to edit them without rebuilding)
+      - ./backend/templates:/app/templates
+      # Logs directory
+      - ./logs:/app/logs
     ports:
       - "8000:8000"
     networks:
       - hr_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Frontend
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Use empty string to let frontend use relative URLs for API calls
+        # This will make API calls go through nginx proxy to backend
+        - VITE_API_URL=
     container_name: hr_frontend
     ports:
       - "3000:80"
@@ -29,7 +47,8 @@ services:
       - hr_network
     restart: unless-stopped
     environment:
-      - REACT_APP_API_URL=http://localhost:8000
+      # For runtime - use empty string to use relative URLs (proxied through nginx)
+      - VITE_API_URL=
 
 networks:
   hr_network:

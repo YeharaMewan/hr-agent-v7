@@ -1,9 +1,12 @@
 // API service layer for HR Management System backend integration
-const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+// In production/Docker: empty string means use relative URLs (proxied through nginx)  
+// In development: use localhost for direct backend connection but prefer proxy
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || '';
+const API_BASE_URL = API_BASE === '' ? '' : API_BASE;
 
 class ApiService {
   constructor() {
-    this.baseURL = API_BASE;
+    this.baseURL = API_BASE_URL;
   }
 
   /**
@@ -339,6 +342,80 @@ class ApiService {
       return await response.json();
     } catch (error) {
       console.error('Get Form Data Error:', error);
+      throw error;
+    }
+  }
+
+  // Document Management API methods
+
+  /**
+   * Download a document by ID
+   * @param {string} documentId - The document ID
+   * @returns {Promise<Blob>} Document blob
+   */
+  async downloadDocument(documentId) {
+    try {
+      const response = await fetch(`${this.baseURL}/documents/download/${documentId}`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/pdf',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP error! status: ${response.status}` }));
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+      }
+
+      return await response.blob();
+    } catch (error) {
+      console.error('Download Document Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get document information by ID
+   * @param {string} documentId - The document ID
+   * @returns {Promise<Object>} Document information
+   */
+  async getDocumentInfo(documentId) {
+    try {
+      const response = await fetch(`${this.baseURL}/documents/${documentId}/info`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Get Document Info Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate a document
+   * @param {Object} documentData - Document generation data
+   * @returns {Promise<Object>} Document generation result
+   */
+  async generateDocument(documentData) {
+    try {
+      const response = await fetch(`${this.baseURL}/documents/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(documentData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Generate Document Error:', error);
       throw error;
     }
   }

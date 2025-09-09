@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 import json
 import logging
 import sqlite3
@@ -20,6 +20,18 @@ load_dotenv()
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Run startup validation in Docker environment
+if os.getenv("DOCKER_CONTAINER") == "true":
+    try:
+        from startup_validation import run_startup_validation
+        validation_success = run_startup_validation()
+        if not validation_success:
+            logger.warning("⚠️ Some startup validations failed, but continuing...")
+    except ImportError:
+        logger.info("Startup validation module not found, skipping...")
+    except Exception as e:
+        logger.error(f"Startup validation error: {str(e)}")
 
 # ==============================================================================
 # CONFIGURATION MANAGEMENT
@@ -129,20 +141,46 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.runnables.config import RunnableConfig
 
-from database import execute_query, get_db_connection, search_similar_documents
-from models import (
-    Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
-    Attendance, AttendanceCreate, AttendanceQuery,
-    Task, TaskCreate, TaskWithDetails, TaskQuery, TaskTimeFilter, TaskWithFullDetails,
-    TaskQueryResponse, TaskIntelligentQuery, MultipleTasksResponse, TaskStatisticsResponse,
-    TaskNotFoundResponse, TaskHumanLoopQuestionResponse, IndividualTaskResponse,
-    Labour, LabourWithFullDetails, LabourWorkloadStatus, LabourQueryResponse, LabourIntelligentQuery,
-    IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
-    MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
-    LabourTaskAssignmentSummary,
-    Department, ChatMessage, APIResponse, AttendanceStatistics,
-    EmployeeCreateRequest, EmployeeUpdateRequest
-)
+# Database imports
+try:
+    from database import execute_query, get_db_connection, search_similar_documents
+except ImportError:
+    from .database import execute_query, get_db_connection, search_similar_documents
+
+# Services imports with fallback for Docker environment
+try:
+    from services.document_service import document_service, DocumentType
+except ImportError:
+    from .services.document_service import document_service, DocumentType
+# Models imports with fallback for Docker environment
+try:
+    from models import (
+        Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
+        Attendance, AttendanceCreate, AttendanceQuery,
+        Task, TaskCreate, TaskWithDetails, TaskQuery, TaskTimeFilter, TaskWithFullDetails,
+        TaskQueryResponse, TaskIntelligentQuery, MultipleTasksResponse, TaskStatisticsResponse,
+        TaskNotFoundResponse, TaskHumanLoopQuestionResponse, IndividualTaskResponse,
+        Labour, LabourWithFullDetails, LabourWorkloadStatus, LabourQueryResponse, LabourIntelligentQuery,
+        IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
+        MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
+        LabourTaskAssignmentSummary,
+        Department, ChatMessage, APIResponse, AttendanceStatistics,
+        EmployeeCreateRequest, EmployeeUpdateRequest
+    )
+except ImportError:
+    from .models import (
+        Employee, EmployeeWithDepartment, EmployeeCreate, EmployeeQuery,
+        Attendance, AttendanceCreate, AttendanceQuery,
+        Task, TaskCreate, TaskWithDetails, TaskQuery, TaskTimeFilter, TaskWithFullDetails,
+        TaskQueryResponse, TaskIntelligentQuery, MultipleTasksResponse, TaskStatisticsResponse,
+        TaskNotFoundResponse, TaskHumanLoopQuestionResponse, IndividualTaskResponse,
+        Labour, LabourWithFullDetails, LabourWorkloadStatus, LabourQueryResponse, LabourIntelligentQuery,
+        IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
+        MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
+        LabourTaskAssignmentSummary,
+        Department, ChatMessage, APIResponse, AttendanceStatistics,
+        EmployeeCreateRequest, EmployeeUpdateRequest
+    )
 
 # Logging already setup above
 
@@ -150,10 +188,11 @@ app = FastAPI(title="HR Management System", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost", "http://127.0.0.1", "*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Initialize embeddings with configuration
@@ -3395,6 +3434,286 @@ def intelligent_decision_check(situation: str, proposed_action: str, impact_scop
             "reasoning": f"Error in decision analysis: {str(e)} - escalating for safety"
         }
 
+# ==============================================================================
+# DOCUMENT GENERATION TOOLS
+# ==============================================================================
+
+@tool
+async def generate_employee_document(
+    document_request: str,
+    employee_name: str = "",
+    document_type: str = "",
+    additional_notes: str = ""
+) -> Dict[str, Any]:
+    """
+    Generate official employment documents like service letters and confirmation letters.
+    
+    Use this tool when users request:
+    - "Generate service letter for [employee]"
+    - "Create confirmation letter for [employee]" 
+    - "I need employment verification for [employee]"
+    - "Generate employment document for [employee]"
+    - "Create official letter for [employee]"
+    
+    Args:
+        document_request: The natural language request for document generation
+        employee_name: Name of the employee (extracted from request if not provided)
+        document_type: Type of document (service_letter, confirmation_letter, etc.)
+        additional_notes: Any additional requirements or notes
+    
+    Returns:
+        Dictionary with document generation result and download information
+    """
+    try:
+        logger.info(f"Processing document generation request: {document_request}")
+        
+        # Parse the natural language request
+        parsed_request = _parse_document_request(document_request, employee_name, document_type)
+        
+        if not parsed_request.get("employee_name"):
+            return {
+                "success": False,
+                "error": "Could not identify employee name from the request",
+                "message": "Please specify which employee you need the document for.",
+                "suggestions": [
+                    "Try: 'Generate service letter for John Doe'",
+                    "Try: 'Create confirmation letter for Jane Smith'",
+                    "Try: 'I need employment verification for [employee name]'"
+                ]
+            }
+        
+        # Find the employee
+        employee_data = await _find_employee_by_name(parsed_request["employee_name"])
+        
+        if not employee_data:
+            return {
+                "success": False,
+                "error": "Employee not found",
+                "message": f"Could not find employee named '{parsed_request['employee_name']}'",
+                "suggestions": [
+                    "Check the spelling of the employee name",
+                    "Try using the full name",
+                    "Use the employee query tools to find the correct name first"
+                ]
+            }
+        
+        # Determine document type if not specified
+        if not parsed_request.get("document_type"):
+            parsed_request["document_type"] = _infer_document_type(document_request)
+        
+        # Prepare additional data
+        additional_data = {
+            "purpose": parsed_request.get("purpose", "official purposes"),
+            "additional_notes": additional_notes,
+            "requested_by": "HR Agent",
+            "request_source": "chat_interface"
+        }
+        
+        # Generate the document
+        result = await document_service.generate_document(
+            document_type=parsed_request["document_type"],
+            employee_id=employee_data["id"],
+            additional_data=additional_data
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": f"✅ {parsed_request['document_type'].replace('_', ' ').title()} generated successfully for {employee_data['name']}",
+                "document_info": {
+                    "document_id": result["document_id"],
+                    "filename": result["filename"],
+                    "document_type": result["document_type"],
+                    "employee_name": employee_data["name"],  # Use original employee name
+                    "generated_at": result["generated_at"],
+                    "expires_at": result["expires_at"]
+                },
+                "download_instructions": "Click the download button in the chat to get your PDF document.",
+                "expiry_notice": "This document will be available for download for 24 hours."
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "message": f"Failed to generate {parsed_request['document_type'].replace('_', ' ')} for {employee_data['name']}",
+                "suggestions": [
+                    "Please try again in a few moments",
+                    "Contact IT support if the problem persists"
+                ]
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in generate_employee_document: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "An error occurred while generating the document",
+            "suggestions": [
+                "Please try your request again",
+                "Make sure the employee name is correct",
+                "Contact support if the issue persists"
+            ]
+        }
+
+def _parse_document_request(request: str, employee_name: str = "", document_type: str = "") -> Dict[str, str]:
+    """Parse natural language document generation request"""
+    import re
+    
+    request_lower = request.lower()
+    result = {
+        "employee_name": employee_name,
+        "document_type": document_type,
+        "purpose": "official purposes"
+    }
+    
+    # Extract employee name if not provided
+    if not result["employee_name"]:
+        name_patterns = [
+            r'(?:for|of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*(?:service|confirmation|employment)',
+            r'employee\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*(?:letter|document)'
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, request)
+            if match:
+                result["employee_name"] = match.group(1).strip()
+                break
+    
+    # Extract document type if not provided
+    if not result["document_type"]:
+        if any(word in request_lower for word in ['service', 'employment verification', 'work experience']):
+            result["document_type"] = DocumentType.SERVICE_LETTER
+        elif any(word in request_lower for word in ['confirmation', 'permanent', 'confirmed']):
+            result["document_type"] = DocumentType.CONFIRMATION_LETTER
+        elif any(word in request_lower for word in ['offer', 'job offer']):
+            result["document_type"] = DocumentType.OFFER_LETTER
+        elif any(word in request_lower for word in ['reference', 'recommendation']):
+            result["document_type"] = DocumentType.REFERENCE_LETTER
+        else:
+            result["document_type"] = DocumentType.SERVICE_LETTER  # Default
+    
+    # Extract purpose
+    purpose_patterns = [
+        r'for\s+(.*?)(?:\s|$)',
+        r'purpose\s*[:\-]?\s*(.*?)(?:\s|$)',
+        r'needed\s+for\s+(.*?)(?:\s|$)'
+    ]
+    
+    for pattern in purpose_patterns:
+        match = re.search(pattern, request_lower)
+        if match:
+            purpose = match.group(1).strip()
+            if purpose and len(purpose) > 3:
+                result["purpose"] = purpose
+                break
+    
+    return result
+
+def _infer_document_type(request: str) -> str:
+    """Infer document type from natural language request"""
+    request_lower = request.lower()
+    
+    # Priority order for document type inference
+    if any(word in request_lower for word in ['confirmation', 'permanent', 'confirmed']):
+        return DocumentType.CONFIRMATION_LETTER
+    elif any(word in request_lower for word in ['service', 'employment verification', 'work experience']):
+        return DocumentType.SERVICE_LETTER
+    elif any(word in request_lower for word in ['offer', 'job offer']):
+        return DocumentType.OFFER_LETTER
+    elif any(word in request_lower for word in ['reference', 'recommendation']):
+        return DocumentType.REFERENCE_LETTER
+    else:
+        return DocumentType.SERVICE_LETTER  # Default fallback
+
+async def _find_employee_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """Find employee by name using robust database query with fallback handling"""
+    try:
+        # Use similar logic to the employee query tools with robust column handling
+        query = """
+        SELECT 
+            e.id, e.name, e.email, e.role, e.phone_number, e.address,
+            e.created_at, e.is_active,
+            d.name as department_name,
+            COALESCE(d.description, '') as department_description
+        FROM employees e
+        LEFT JOIN departments d ON e.department_id = d.id
+        WHERE LOWER(e.name) LIKE %s OR LOWER(e.name) = %s
+        ORDER BY 
+            CASE WHEN LOWER(e.name) = %s THEN 1 ELSE 2 END,
+            e.name
+        LIMIT 1
+        """
+        
+        name_lower = name.lower()
+        name_pattern = f"%{name_lower}%"
+        
+        result = execute_query(query, (name_pattern, name_lower, name_lower))
+        
+        if result and len(result) > 0:
+            row = result[0]
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "email": row["email"],
+                "role": row["role"],
+                "phone_number": row["phone_number"] or "",
+                "address": row["address"] or "",
+                "created_at": row["created_at"],
+                "is_active": row["is_active"],
+                "department_name": row["department_name"] or "",
+                "department_description": row["department_description"] or ""
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error finding employee {name}: {str(e)}")
+        
+        # Fallback query without department description if column doesn't exist
+        try:
+            logger.info("Attempting fallback query without department description...")
+            fallback_query = """
+            SELECT 
+                e.id, e.name, e.email, e.role, e.phone_number, e.address,
+                e.created_at, e.is_active,
+                d.name as department_name
+            FROM employees e
+            LEFT JOIN departments d ON e.department_id = d.id
+            WHERE LOWER(e.name) LIKE %s OR LOWER(e.name) = %s
+            ORDER BY 
+                CASE WHEN LOWER(e.name) = %s THEN 1 ELSE 2 END,
+                e.name
+            LIMIT 1
+            """
+            
+            name_lower = name.lower()
+            name_pattern = f"%{name_lower}%"
+            
+            result = execute_query(fallback_query, (name_pattern, name_lower, name_lower))
+            
+            if result and len(result) > 0:
+                row = result[0]
+                logger.info("Fallback query successful")
+                return {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "email": row["email"],
+                    "role": row["role"],
+                    "phone_number": row["phone_number"] or "",
+                    "address": row["address"] or "",
+                    "created_at": row["created_at"],
+                    "is_active": row["is_active"],
+                    "department_name": row["department_name"] or "",
+                    "department_description": ""  # Default empty string
+                }
+            
+        except Exception as fallback_error:
+            logger.error(f"Fallback query also failed: {str(fallback_error)}")
+        
+        return None
+
 @tool
 def ask_company_documents(query: str) -> str:
     """
@@ -3428,15 +3747,21 @@ def ask_company_documents(query: str) -> str:
 @tool
 def query_attendance_intelligent(query: str) -> Dict[str, Any]:
     """
-    Intelligent attendance query tool that understands natural language requests.
+    Intelligent attendance query tool for generating REPORTS and listing employee data.
     
-    Handles queries like:
+    AUTOMATICALLY switches to summary mode for large datasets (>30 days or monthly reports) to prevent token overflow.
+    
+    Use this for attendance reports and employee listings like:
+    - "Generate attendance report for this week" / "weekly attendance report"
     - "who works today" / "today's attendance" 
     - "marketing team today's attendance" / "rise ai team department today's attendance"
     - "John's attendance" / "attendance for John Smith"
     - "who is on leave today" / "absent employees today"
     - "attendance last week" / "attendance this month"
+    
+    For large monthly reports, this automatically provides summary + follow-up options.
     - "attendance from 2024-01-01 to 2024-01-31"
+    - "show all employees attendance" / "complete attendance report"
     
     Parameters:
     - query: Natural language query about attendance
@@ -3527,8 +3852,12 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             match = re.search(pattern, query)
             if match:
                 potential_name = match.group(1).strip()
-                # Avoid capturing common words as names
-                if not any(word in potential_name.lower() for word in ['attendance', 'team', 'department', 'today', 'yesterday']):
+                # Avoid capturing common words as names - expanded list
+                exclude_words = [
+                    'attendance', 'team', 'department', 'today', 'yesterday', 'this', 'week', 'month',
+                    'last', 'next', 'report', 'summary', 'overview', 'all', 'everyone', 'complete'
+                ]
+                if not any(word in potential_name.lower() for word in exclude_words):
                     employee_name = potential_name
                     break
         
@@ -3563,6 +3892,19 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
                 start_date = today - timedelta(days=7)
                 end_date = today
         
+        # Smart query detection - prevent token overflow for large datasets
+        if start_date and end_date:
+            date_range_days = (end_date - start_date).days + 1
+            estimated_records = date_range_days * 50  # Rough estimate: 50 employees * days
+            
+            # For large datasets (>30 days or >1000 estimated records), redirect to summary
+            if date_range_days > 30 or estimated_records > 1000:
+                logger.info(f"DEBUG: Large dataset detected - redirecting to summary")
+                logger.info(f"DEBUG: Date range: {date_range_days} days, estimated records: {estimated_records}")
+                
+                # Call the summary function instead for large datasets
+                return summarize_attendance_intelligent(query)
+        
         # Build SQL query
         where_conditions = []
         params = []
@@ -3596,24 +3938,79 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
                 where_conditions.append(f"a.status IN ({placeholders})")
                 params.extend(status_filter)
         
-        # Construct final query
-        base_query = """
-        SELECT 
-            a.id,
-            a.attendance_date,
-            a.status,
-            a.check_in_time,
-            a.check_out_time,
-            a.notes,
-            e.id as employee_id,
-            e.name as employee_name,
-            e.email as employee_email,
-            e.role as employee_role,
-            d.name as department_name
-        FROM attendances a
-        JOIN employees e ON a.employee_id = e.id
-        JOIN departments d ON e.department_id = d.id
-        """
+        # Determine if this is a comprehensive report request (should show all employees)
+        comprehensive_keywords = [
+            'attendance report', 'weekly report', 'monthly report', 'report for',
+            'attendance summary', 'all employees', 'everyone', 'complete report',
+            'attendance overview', 'weekly attendance', 'monthly attendance'
+        ]
+        
+        is_comprehensive_report = any(keyword in query_lower for keyword in comprehensive_keywords)
+        
+        # Debug logging for comprehensive report detection
+        logger.info(f"DEBUG: Comprehensive report detection:")
+        logger.info(f"DEBUG: - Query: '{query}'")
+        logger.info(f"DEBUG: - Query lower: '{query_lower}'")
+        logger.info(f"DEBUG: - is_comprehensive_report: {is_comprehensive_report}")
+        logger.info(f"DEBUG: - employee_name: '{employee_name}'")
+        logger.info(f"DEBUG: - status_filter: {status_filter}")
+        logger.info(f"DEBUG: - Will use LEFT JOIN: {is_comprehensive_report and not employee_name and not status_filter}")
+        
+        # Construct final query - use LEFT JOIN for comprehensive reports, INNER JOIN for specific queries
+        if is_comprehensive_report and not employee_name and not status_filter:
+            # Comprehensive report: Show ALL employees even if they have no attendance records
+            base_query = """
+            SELECT 
+                a.id,
+                a.attendance_date,
+                a.status,
+                a.check_in_time,
+                a.check_out_time,
+                a.notes,
+                e.id as employee_id,
+                e.name as employee_name,
+                e.email as employee_email,
+                e.role as employee_role,
+                d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            LEFT JOIN attendances a ON a.employee_id = e.id
+            """
+            
+            # Adjust WHERE conditions for LEFT JOIN structure
+            adjusted_where_conditions = []
+            for condition in where_conditions:
+                # Replace attendance-based date conditions to work with LEFT JOIN
+                if condition.startswith("a.attendance_date"):
+                    if "=" in condition and ">=" not in condition and "<=" not in condition:
+                        # Single date condition: a.attendance_date = %s
+                        adjusted_where_conditions.append("(a.attendance_date = %s OR a.attendance_date IS NULL)")
+                    else:
+                        # Date range condition: keep as is for records within range, OR show employees with no records
+                        adjusted_where_conditions.append(f"({condition} OR a.attendance_date IS NULL)")
+                else:
+                    adjusted_where_conditions.append(condition)
+            where_conditions = adjusted_where_conditions
+            
+        else:
+            # Specific query: Only show employees with attendance records  
+            base_query = """
+            SELECT 
+                a.id,
+                a.attendance_date,
+                a.status,
+                a.check_in_time,
+                a.check_out_time,
+                a.notes,
+                e.id as employee_id,
+                e.name as employee_name,
+                e.email as employee_email,
+                e.role as employee_role,
+                d.name as department_name
+            FROM attendances a
+            JOIN employees e ON a.employee_id = e.id
+            JOIN departments d ON e.department_id = d.id
+            """
         
         if where_conditions:
             base_query += " WHERE " + " AND ".join(where_conditions)
@@ -3642,13 +4039,21 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
         # Generate human-readable summary
         total_records = len(results)
         unique_employees = len(set(r['employee_name'] for r in results))
-        unique_dates = len(set(r['attendance_date'] for r in results))
+        unique_dates = len(set(r['attendance_date'] for r in results if r['attendance_date'] is not None))
         
-        # Status breakdown
+        # Status breakdown - handle NULL status for employees without attendance records
         status_counts = {}
+        employees_with_records = 0
+        employees_without_records = 0
+        
         for record in results:
             status = record['status']
-            status_counts[status] = status_counts.get(status, 0) + 1
+            if status is not None:
+                status_counts[status] = status_counts.get(status, 0) + 1
+                employees_with_records += 1
+            else:
+                status_counts['No Record'] = status_counts.get('No Record', 0) + 1
+                employees_without_records += 1
         
         date_range_str = ""
         if start_date and end_date:
@@ -3657,17 +4062,29 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             else:
                 date_range_str = f" from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
         
-        summary_parts = [f"Found {total_records} attendance records"]
-        if employee_name:
-            summary_parts.append(f"for employee '{employee_name}'")
-        if department:
-            summary_parts.append(f"in {department} department")
-        summary_parts.append(date_range_str)
-        
-        summary = " ".join(summary_parts) + "."
+        # Create more informative summary for comprehensive reports
+        if is_comprehensive_report and not employee_name and not status_filter:
+            summary_parts = [f"Attendance report for {unique_employees} employees"]
+            if department:
+                summary_parts.append(f"in {department} department")
+            summary_parts.append(date_range_str)
+            
+            summary = " ".join(summary_parts) + "."
+            
+            if employees_with_records > 0 or employees_without_records > 0:
+                summary += f" {employees_with_records} employees have attendance records, {employees_without_records} employees have no records."
+        else:
+            summary_parts = [f"Found {total_records} attendance records"]
+            if employee_name:
+                summary_parts.append(f"for employee '{employee_name}'")
+            if department:
+                summary_parts.append(f"in {department} department")
+            summary_parts.append(date_range_str)
+            
+            summary = " ".join(summary_parts) + "."
         
         if status_counts:
-            status_summary = ", ".join([f"{count} {status}" for status, count in status_counts.items()])
+            status_summary = ", ".join([f"{count} {status.replace('No Record', 'No Record')}" for status, count in status_counts.items()])
             summary += f" Status breakdown: {status_summary}."
         
         return {
@@ -3678,6 +4095,9 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             "unique_employees": unique_employees,
             "unique_dates": unique_dates,
             "status_breakdown": status_counts,
+            "is_comprehensive_report": is_comprehensive_report,
+            "employees_with_records": employees_with_records,
+            "employees_without_records": employees_without_records,
             "filters_applied": {
                 "employee_name": employee_name,
                 "department": department,
@@ -3876,29 +4296,350 @@ def _create_follow_up_questions(dept_data: Dict[str, Dict[str, Any]], metrics: D
         if top_dept and top_dept['attendance_rate'] >= 90:
             questions.append(f"✨ Want to see what makes {top_dept['name']} department successful?")
     
-    # Suggest individual employee analysis
+    # Progressive disclosure options
     total_employees = metrics['total_employees']
     if total_employees > 10:
-        questions.append("👤 Need individual employee attendance details for any team members?")
+        questions.append("📋 Would you like employee-wise attendance counts (name → days present/absent)?")
+        questions.append("🏢 Need detailed breakdown for a specific department or role?")
+        questions.append("👤 Want to see detailed records for specific employees?")
     
-    # Suggest trend analysis
-    questions.append("📈 Would you like to compare this with previous periods?")
+    # Secondary analysis options  
+    if metrics['department_count'] > 3:
+        questions.append("📈 Should I compare attendance rates across all departments?")
     
-    # Pattern analysis
-    questions.append("🔍 Should I identify employees with perfect attendance or concerning patterns?")
+    # Trend and pattern analysis
+    questions.append("🔍 Want to identify employees with perfect attendance or concerning patterns?")
     
     return questions[:3]  # Limit to top 3 most relevant questions
+
+def _query_attendance_internal(query: str) -> Dict[str, Any]:
+    """
+    Internal attendance query function that bypasses the large dataset redirect logic.
+    Used by summarize_attendance_intelligent to get raw data for analysis.
+    """
+    try:
+        import re
+        from datetime import datetime, timedelta, date
+        
+        # Initialize query parameters
+        employee_name = None
+        department = None
+        status_filter = None
+        start_date = None
+        end_date = None
+        days = 7
+        
+        query_lower = query.lower().strip()
+        
+        # Extract date information
+        today = date.today()
+        
+        # Date pattern matching (same logic as main function)
+        if "today" in query_lower:
+            start_date = end_date = today
+        elif "yesterday" in query_lower:
+            yesterday = today - timedelta(days=1)
+            start_date = end_date = yesterday
+        elif "this week" in query_lower:
+            start_date = today - timedelta(days=today.weekday())
+            end_date = today
+        elif "last week" in query_lower:
+            start_of_last_week = today - timedelta(days=today.weekday() + 7)
+            end_of_last_week = start_of_last_week + timedelta(days=6)
+            start_date = start_of_last_week
+            end_date = end_of_last_week
+        elif "this month" in query_lower:
+            start_date = today.replace(day=1)
+            end_date = today
+        elif "last month" in query_lower:
+            first_day_this_month = today.replace(day=1)
+            last_day_last_month = first_day_this_month - timedelta(days=1)
+            start_date = last_day_last_month.replace(day=1)
+            end_date = last_day_last_month
+        
+        # Look for specific date patterns (YYYY-MM-DD)
+        date_pattern = r'\b(\d{4}-\d{2}-\d{2})\b'
+        dates_found = re.findall(date_pattern, query)
+        if len(dates_found) == 1:
+            start_date = end_date = datetime.strptime(dates_found[0], '%Y-%m-%d').date()
+        elif len(dates_found) == 2:
+            start_date = datetime.strptime(dates_found[0], '%Y-%m-%d').date()
+            end_date = datetime.strptime(dates_found[1], '%Y-%m-%d').date()
+        
+        # Extract department information (same logic)
+        dept_patterns = [
+            r'\b(marketing|hr|it|rise ai|construction|agriculture|landscape|mechanical|electrical|architecture|house keeping|heavy machinery|kitchen|qbit|games|ramstudios|ram studios)\b',
+            r'(department|team|group)\s+([a-zA-Z\s]+)',
+            r'([a-zA-Z\s]+)\s+(department|team)',
+            r'\b(rise ai team|ai team)\b'
+        ]
+        
+        for pattern in dept_patterns:
+            match = re.search(pattern, query_lower, re.IGNORECASE)
+            if match:
+                if "rise ai" in query_lower or "rise ai team" in query_lower:
+                    department = "rise ai"
+                else:
+                    department = match.group(1) if match.groups() else match.group(0)
+                break
+        
+        # Extract employee name (same logic)
+        name_patterns = [
+            r"for\s+([A-Za-z\s]+?)(?:\s|$)",
+            r"([A-Za-z]+\s+[A-Za-z]+)'s",
+            r'"([^"]+)"',
+            r"'([^']+)'"
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, query)
+            if match:
+                potential_name = match.group(1).strip()
+                # Avoid capturing common words as names
+                exclude_words = [
+                    'attendance', 'team', 'department', 'today', 'yesterday', 'this', 'week', 'month',
+                    'last', 'next', 'report', 'summary', 'overview', 'all', 'everyone', 'complete'
+                ]
+                if potential_name.lower() not in exclude_words:
+                    employee_name = potential_name
+                    break
+        
+        # Extract status information (same logic)
+        status_keywords = {
+            'absent': ['Sudden Leave', 'Medical Leave', 'Planned Leave'],
+            'leave': ['Sudden Leave', 'Medical Leave', 'Planned Leave'],
+            'present': 'Present',
+            'working': 'Present',
+            'on leave': ['Sudden Leave', 'Medical Leave', 'Planned Leave'],
+            'medical leave': 'Medical Leave',
+            'planned leave': 'Planned Leave',
+            'holiday': 'Holiday Leave'
+        }
+        
+        for keyword, status in status_keywords.items():
+            if keyword in query_lower:
+                if isinstance(status, list):
+                    status_filter = status
+                else:
+                    status_filter = [status]
+                break
+        
+        # Default date range if none specified
+        if not start_date and not end_date:
+            if any(word in query_lower for word in ['who works', 'who is working', "today's"]):
+                start_date = end_date = today
+            else:
+                start_date = today - timedelta(days=7)
+                end_date = today
+        
+        # Build SQL query (same logic as main function)
+        where_conditions = []
+        params = []
+        
+        # Date filtering
+        if start_date and end_date:
+            if start_date == end_date:
+                where_conditions.append("a.attendance_date = %s")
+                params.append(start_date)
+            else:
+                where_conditions.append("a.attendance_date >= %s AND a.attendance_date <= %s")
+                params.extend([start_date, end_date])
+        
+        # Employee filtering
+        if employee_name:
+            where_conditions.append("e.name ILIKE %s")
+            params.append(f"%{employee_name}%")
+        
+        # Department filtering
+        if department:
+            where_conditions.append("d.name ILIKE %s")
+            params.append(f"%{department}%")
+        
+        # Status filtering
+        if status_filter:
+            if len(status_filter) == 1:
+                where_conditions.append("a.status = %s")
+                params.append(status_filter[0])
+            else:
+                placeholders = ', '.join(['%s'] * len(status_filter))
+                where_conditions.append(f"a.status IN ({placeholders})")
+                params.extend(status_filter)
+        
+        # Comprehensive report detection logic (same as main function)
+        comprehensive_keywords = [
+            'attendance report', 'weekly report', 'monthly report', 'report for',
+            'attendance summary', 'all employees', 'everyone', 'complete report',
+            'attendance overview', 'weekly attendance', 'monthly attendance'
+        ]
+        
+        is_comprehensive_report = any(keyword in query_lower for keyword in comprehensive_keywords)
+        
+        # Construct final query - use LEFT JOIN for comprehensive reports, INNER JOIN for specific queries
+        if is_comprehensive_report and not employee_name and not status_filter:
+            # Comprehensive report: Show ALL employees even if they have no attendance records
+            base_query = """
+            SELECT 
+                a.id,
+                a.attendance_date,
+                a.status,
+                a.check_in_time,
+                a.check_out_time,
+                a.notes,
+                e.id as employee_id,
+                e.name as employee_name,
+                e.email as employee_email,
+                e.role as employee_role,
+                d.name as department_name
+            FROM employees e
+            JOIN departments d ON e.department_id = d.id
+            LEFT JOIN attendances a ON a.employee_id = e.id
+            """
+        else:
+            # Standard query: Show only employees with attendance records
+            base_query = """
+            SELECT 
+                a.id,
+                a.attendance_date,
+                a.status,
+                a.check_in_time,
+                a.check_out_time,
+                a.notes,
+                e.id as employee_id,
+                e.name as employee_name,
+                e.email as employee_email,
+                e.role as employee_role,
+                d.name as department_name
+            FROM attendances a
+            JOIN employees e ON a.employee_id = e.id
+            JOIN departments d ON e.department_id = d.id
+            """
+        
+        # Add WHERE conditions if any
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+        
+        # Add ORDER BY
+        base_query += " ORDER BY a.attendance_date DESC, e.name ASC"
+        
+        # Execute query
+        results = execute_query(base_query, tuple(params))
+        
+        if not results:
+            return {
+                "success": True,
+                "message": "No attendance records found matching your query.",
+                "data": [],
+                "total_records": 0,
+                "filters_applied": {
+                    "employee_name": employee_name,
+                    "department": department,
+                    "status_filter": status_filter,
+                    "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                    "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+                },
+                "query_understood": query
+            }
+        
+        # Process results and generate response
+        formatted_results = []
+        status_counts = {}
+        employees_with_records = 0
+        employees_without_records = 0
+        unique_employees = set()
+        unique_dates = set()
+        
+        for record in results:
+            status = record['status']
+            if status is not None:
+                status_counts[status] = status_counts.get(status, 0) + 1
+                employees_with_records += 1
+            else:
+                status_counts['No Record'] = status_counts.get('No Record', 0) + 1
+                employees_without_records += 1
+            
+            unique_employees.add(record['employee_name'])
+            if record['attendance_date']:
+                unique_dates.add(record['attendance_date'])
+            
+            # Format the record
+            formatted_record = dict(record)
+            if formatted_record['check_in_time']:
+                formatted_record['check_in_time'] = formatted_record['check_in_time'].strftime('%I:%M %p')
+            if formatted_record['check_out_time']:
+                formatted_record['check_out_time'] = formatted_record['check_out_time'].strftime('%I:%M %p')
+            
+            formatted_results.append(formatted_record)
+        
+        # Create human-readable message
+        total_unique_employees = len(unique_employees)
+        total_unique_dates = len(unique_dates)
+        
+        # Build status breakdown string
+        status_breakdown_parts = []
+        for status, count in status_counts.items():
+            if status == 'No Record':
+                continue  # Handle separately
+            status_breakdown_parts.append(f"{count} {status.lower()}")
+        
+        if 'No Record' in status_counts:
+            status_breakdown_parts.append(f"{status_counts['No Record']} with no records")
+        
+        status_breakdown_str = ", ".join(status_breakdown_parts)
+        
+        if start_date and end_date:
+            if start_date == end_date:
+                date_str = f" for {start_date}"
+            else:
+                date_str = f" from {start_date} to {end_date}"
+        else:
+            date_str = ""
+        
+        message = f"Found {len(results)} attendance records{date_str}. Status breakdown: {status_breakdown_str}."
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": formatted_results,
+            "total_records": len(results),
+            "unique_employees": total_unique_employees,
+            "unique_dates": total_unique_dates,
+            "status_breakdown": status_counts,
+            "filters_applied": {
+                "employee_name": employee_name,
+                "department": department,
+                "status_filter": status_filter,
+                "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+            },
+            "query_understood": query
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error processing attendance query: {str(e)}",
+            "data": [],
+            "query_understood": query
+        }
 
 @tool
 def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
     """
-    Intelligent attendance summarization tool for large datasets with agentic insights.
+    Intelligent attendance summarization tool for analyzing PATTERNS and TRENDS in large datasets.
     
-    Perfect for queries like:
-    - "Show last month attendance summary"
-    - "Department-wise attendance overview" 
-    - "Attendance patterns this quarter"
-    - "How is team attendance performing?"
+    This tool provides SUMMARY views with progressive disclosure options for large datasets:
+    - Automatically used for monthly reports to prevent token overflow
+    - Provides structured summaries with key metrics and insights
+    - Offers follow-up questions for drilling down into specific data
+    - Can generate employee-wise attendance counts when requested
+    
+    Use for analytical queries like:
+    - "Analyze attendance patterns this quarter"
+    - "What are the attendance trends?"
+    - "Performance analysis of attendance"
+    - "Compare department attendance metrics"
+    - Large monthly/quarterly reports (auto-triggered)
+    For comprehensive employee reports use query_attendance_intelligent instead.
     
     Provides smart summaries, insights, and progressive disclosure instead of overwhelming raw data.
     
@@ -3914,8 +4655,9 @@ def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
     - data_scope: Information about the data analyzed
     """
     try:
-        # Use existing query tool to get raw data
-        raw_result = query_attendance_intelligent(query)
+        # Call internal function to avoid infinite recursion for large datasets
+        # We need the raw data to create summaries, so bypass the redirect logic
+        raw_result = _query_attendance_internal(query)
         
         if not raw_result.get('success') or not raw_result.get('data'):
             return {
@@ -4009,6 +4751,140 @@ def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
             "follow_up_questions": ["Would you like to try a more specific date range or department query?"]
         }
 
+@tool
+def get_employee_wise_attendance_counts(query: str) -> Dict[str, Any]:
+    """
+    Generate employee-wise attendance counts for progressive disclosure after summary reports.
+    
+    Perfect for follow-up queries like:
+    - "Show me employee-wise attendance counts"
+    - "List each employee's attendance summary"
+    - "Employee names with their attendance days"
+    
+    Returns compact employee-wise statistics without overwhelming token usage.
+    """
+    try:
+        # Get raw attendance data
+        raw_result = _query_attendance_internal(query)
+        
+        if not raw_result.get('success') or not raw_result.get('data'):
+            return {
+                "success": True,
+                "message": "No attendance data found for employee-wise counting.",
+                "employee_counts": {},
+                "summary": "No data available for the specified period.",
+                "follow_up_questions": [
+                    "Try a different date range?",
+                    "Check attendance for a specific department?"
+                ]
+            }
+        
+        raw_data = raw_result['data']
+        employee_counts = {}
+        
+        # Process each record to build employee-wise counts
+        for record in raw_data:
+            employee_name = record['employee_name']
+            status = record.get('status', 'No Record')
+            department = record.get('department_name', 'Unknown')
+            
+            if employee_name not in employee_counts:
+                employee_counts[employee_name] = {
+                    'department': department,
+                    'present': 0,
+                    'absent': 0,
+                    'leave': 0,
+                    'remote': 0,
+                    'no_record': 0,
+                    'total_days': 0
+                }
+            
+            emp_data = employee_counts[employee_name]
+            emp_data['total_days'] += 1
+            
+            if status is None or status == 'No Record':
+                emp_data['no_record'] += 1
+            elif 'present' in status.lower():
+                emp_data['present'] += 1
+            elif 'home' in status.lower() or 'remote' in status.lower():
+                emp_data['remote'] += 1
+            elif any(leave_type in status.lower() for leave_type in ['leave', 'absent', 'holiday']):
+                emp_data['leave'] += 1
+            else:
+                emp_data['absent'] += 1
+        
+        # Format the response for easy reading
+        employee_summary_lines = []
+        total_employees = len(employee_counts)
+        
+        for employee_name, counts in sorted(employee_counts.items()):
+            # Calculate attendance rate
+            working_days = counts['present'] + counts['remote']
+            attendance_rate = (working_days / counts['total_days'] * 100) if counts['total_days'] > 0 else 0
+            
+            # Build status summary
+            status_parts = []
+            if counts['present'] > 0:
+                status_parts.append(f"Present: {counts['present']}")
+            if counts['remote'] > 0:
+                status_parts.append(f"Remote: {counts['remote']}")
+            if counts['leave'] > 0:
+                status_parts.append(f"Leave: {counts['leave']}")
+            if counts['absent'] > 0:
+                status_parts.append(f"Absent: {counts['absent']}")
+            if counts['no_record'] > 0:
+                status_parts.append(f"No Record: {counts['no_record']}")
+            
+            status_summary = ", ".join(status_parts) if status_parts else "No data"
+            
+            # Format: Employee Name (Department) → Status breakdown (Rate%)
+            employee_line = f"• **{employee_name}** ({counts['department']}) → {status_summary} ({attendance_rate:.1f}%)"
+            employee_summary_lines.append(employee_line)
+        
+        # Build the final message
+        date_info = raw_result.get('filters_applied', {})
+        start_date = date_info.get('start_date', 'N/A')
+        end_date = date_info.get('end_date', 'N/A')
+        period = f"{start_date} to {end_date}" if start_date != end_date else start_date
+        
+        summary_message = f"""
+📋 **Employee-Wise Attendance Counts**
+
+**Period**: {period}
+**Total Employees**: {total_employees}
+
+### Individual Attendance Summary:
+
+{chr(10).join(employee_summary_lines)}
+
+💡 This shows each employee's attendance breakdown for easy tracking and management decisions.
+"""
+        
+        return {
+            "success": True,
+            "message": summary_message,
+            "employee_counts": employee_counts,
+            "summary": f"Generated attendance counts for {total_employees} employees",
+            "data_scope": {
+                "period": period,
+                "total_employees": total_employees,
+                "processing_mode": "employee_wise_counts"
+            },
+            "follow_up_questions": [
+                "Need detailed records for any specific employee?",
+                "Want to filter by a specific department?",
+                "Should I identify employees with attendance concerns?"
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error generating employee-wise counts: {str(e)}",
+            "employee_counts": {},
+            "follow_up_questions": ["Try rephrasing your attendance query?"]
+        }
+
 # ==============================================================================
 # LANGCHAIN GRAPH SETUP
 # ==============================================================================
@@ -4088,11 +4964,13 @@ tools = [
     # Human loop confirmation handling
     handle_human_loop_confirmation,
     # Unified attendance tools
-    query_attendance_intelligent, summarize_attendance_intelligent, handle_attendance_create_update_request,
+    query_attendance_intelligent, summarize_attendance_intelligent, get_employee_wise_attendance_counts, handle_attendance_create_update_request,
     # Enhanced task query tools
     query_tasks_intelligent,
     # Enhanced labour query tools
     query_labourers_intelligent,
+    # Document generation tools
+    generate_employee_document,
     # Non-attendance functions
     get_all_employees_overview, get_tasks_report, get_current_datetime,
     escalate_to_human, intelligent_decision_check, ask_company_documents
@@ -4484,6 +5362,24 @@ User: "change Simon information" → INSTANTLY call update_employee_intelligent(
 
 ---
 
+**📄 CRITICAL: Document Generation Response Rules - NEVER CREATE DOWNLOAD LINKS**
+
+When generating documents using the generate_employee_document tool:
+1. ✅ **ONLY announce document generation success** - the frontend handles all download functionality
+2. ❌ **ABSOLUTELY NEVER create ANY clickable links** - no markdown links, no URLs, no download instructions
+3. ❌ **NEVER mention "download using the link below"** - there should be no link in your response
+4. ❌ **NEVER create markdown links like [Download Document](URL)** - this causes critical sandbox URL errors
+5. ✅ **CORRECT response template**: "✅ [Document Type] generated successfully for [Employee Name]. The document is ready."
+6. ❌ **FORBIDDEN response patterns**: 
+   - "You can download it using the link below"
+   - "[Download Confirmation Letter](any-url)"
+   - Any mention of clicking links or downloading
+   - Any URLs or links in your response
+
+**IMPORTANT**: When using the generate_employee_document tool, you MUST return the COMPLETE tool result including the document_info. Do NOT override the tool response with just text - the frontend needs the full tool result with document_info to display download buttons. Simply return the tool result as-is.
+
+---
+
 Ready to dive in? Whether you need to query attendance records, analyze trends, manage employees, or just understand what's happening with your team, I'm here to help in whatever way makes most sense for your situation. What would you like to explore?
 """
 
@@ -4507,18 +5403,70 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint with token usage summary"""
-    health_data = {
-        "status": "healthy", 
-        "timestamp": datetime.now().isoformat(),
-        "langsmith_enabled": LangChainConfig.LANGSMITH_TRACING,
-        "token_tracking_enabled": LangChainConfig.ENABLE_TOKEN_TRACKING
-    }
-    
-    if token_tracker:
-        health_data["session_usage"] = token_tracker.get_session_summary()
-    
-    return health_data
+    """Enhanced health check endpoint with dependency validation"""
+    try:
+        health_data = {
+            "status": "healthy", 
+            "timestamp": datetime.now().isoformat(),
+            "version": "2.0.0",
+            "environment": "docker" if os.getenv("DOCKER_CONTAINER") == "true" else "local",
+            "langsmith_enabled": LangChainConfig.LANGSMITH_TRACING,
+            "token_tracking_enabled": LangChainConfig.ENABLE_TOKEN_TRACKING
+        }
+        
+        # Check critical dependencies for document generation
+        dependencies = {}
+        
+        # Check WeasyPrint
+        try:
+            import weasyprint
+            dependencies["weasyprint"] = "available"
+        except ImportError:
+            dependencies["weasyprint"] = "missing"
+            
+        # Check Jinja2
+        try:
+            import jinja2
+            dependencies["jinja2"] = "available"
+        except ImportError:
+            dependencies["jinja2"] = "missing"
+            
+        # Check template files
+        from pathlib import Path
+        template_dir = Path("templates")
+        if template_dir.exists():
+            template_files = list(template_dir.glob("*.html"))
+            dependencies["templates"] = f"{len(template_files)} templates found"
+        else:
+            dependencies["templates"] = "template directory missing"
+            
+        # Check storage directory
+        storage_dir = Path("storage/documents")
+        if storage_dir.exists():
+            dependencies["storage"] = "available"
+        else:
+            dependencies["storage"] = "missing"
+            
+        health_data["dependencies"] = dependencies
+        
+        # Add token usage if available
+        if token_tracker:
+            health_data["session_usage"] = token_tracker.get_session_summary()
+        
+        # Determine overall status
+        missing_deps = [k for k, v in dependencies.items() if "missing" in v]
+        if missing_deps:
+            health_data["status"] = "degraded"
+            health_data["warnings"] = f"Missing dependencies: {missing_deps}"
+            
+        return health_data
+        
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/usage")
 async def get_usage_statistics():
@@ -4758,6 +5706,256 @@ async def get_labourers(
         logger.error(f"Error in get labourers endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==============================================================================
+# DOCUMENT GENERATION ENDPOINTS
+# ==============================================================================
+
+from fastapi.responses import FileResponse
+import aiofiles
+import os
+
+@app.post("/documents/generate")
+async def generate_document_endpoint(
+    employee_id: int,
+    document_type: str,
+    additional_data: dict = None
+):
+    """Generate a document for an employee"""
+    try:
+        if document_type not in [DocumentType.SERVICE_LETTER, DocumentType.CONFIRMATION_LETTER, DocumentType.OFFER_LETTER, DocumentType.REFERENCE_LETTER]:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid document type. Must be one of: {[DocumentType.SERVICE_LETTER, DocumentType.CONFIRMATION_LETTER, DocumentType.OFFER_LETTER, DocumentType.REFERENCE_LETTER]}"
+            )
+        
+        result = await document_service.generate_document(
+            document_type=document_type,
+            employee_id=employee_id,
+            additional_data=additional_data or {}
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Document generated successfully",
+                "data": result
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Failed to generate document")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in document generation endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.options("/documents/download/{document_id}")
+async def download_document_options(document_id: str):
+    """Handle CORS preflight request for document download"""
+    return Response(
+        status_code=200,
+        headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+            'Access-Control-Max-Age': '3600'
+        }
+    )
+
+@app.get("/documents/download/{document_id}")
+async def download_document_endpoint(document_id: str):
+    """Download a generated document"""
+    try:
+        # Get document information
+        document_info = await document_service.get_document_info(document_id)
+        
+        if not document_info:
+            raise HTTPException(status_code=404, detail="Document not found or expired")
+        
+        if document_info.get("is_expired", True):
+            raise HTTPException(status_code=410, detail="Document has expired")
+        
+        if not document_info.get("file_exists", False):
+            raise HTTPException(status_code=404, detail="Document file not found")
+        
+        file_path = document_info["file_path"]
+        
+        # Additional file validation
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Document file not found on server")
+        
+        # Check if file is not empty
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            raise HTTPException(status_code=500, detail="Document file is empty or corrupted")
+        
+        # Determine filename and content type FIRST
+        # Use user-friendly filename if available, otherwise fall back to file basename
+        filename = document_info.get("user_filename", os.path.basename(file_path))
+        if filename.endswith('.pdf'):
+            media_type = 'application/pdf'
+        elif filename.endswith('.txt'):
+            media_type = 'text/plain'
+        else:
+            media_type = 'application/octet-stream'
+        
+        logger.info(f"Serving document {document_id}: {filename} ({file_size} bytes)")
+        
+        # Mark document as downloaded
+        await document_service.mark_document_downloaded(document_id)
+        
+        # Return file response with proper headers for download
+        # For small files, try reading and returning as bytes to avoid streaming issues
+        if file_size < 10 * 1024 * 1024:  # Less than 10MB
+            try:
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                
+                from fastapi.responses import Response
+                return Response(
+                    content=file_content,
+                    media_type=media_type,
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Length': str(file_size),
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'Accept-Ranges': 'bytes',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                        'Access-Control-Expose-Headers': 'Content-Length, Content-Disposition'
+                    }
+                )
+            except Exception as read_error:
+                logger.error(f"Error reading file {file_path}: {str(read_error)}")
+                # Fall back to FileResponse
+        
+        return FileResponse(
+            path=file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Content-Length': str(file_size),
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+                'Accept-Ranges': 'bytes',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                'Access-Control-Expose-Headers': 'Content-Length, Content-Disposition'
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/{document_id}/info")
+async def get_document_info_endpoint(document_id: str):
+    """Get information about a generated document"""
+    try:
+        document_info = await document_service.get_document_info(document_id)
+        
+        if not document_info:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        return {
+            "success": True,
+            "data": document_info
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document info for {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/{document_id}/preview")
+async def preview_document_endpoint(document_id: str):
+    """Preview a generated document as HTML with download button"""
+    try:
+        # Get document information
+        document_info = await document_service.get_document_info(document_id)
+        
+        if not document_info:
+            raise HTTPException(status_code=404, detail="Document not found or expired")
+        
+        if document_info.get("is_expired", True):
+            raise HTTPException(status_code=410, detail="Document has expired")
+        
+        # Get employee data to regenerate the template
+        employee_data = await document_service._get_employee_data(document_info["employee_id"])
+        if not employee_data:
+            raise HTTPException(status_code=404, detail="Employee data not found")
+        
+        # Determine document type from database record
+        document_type = document_info["document_type"]
+        
+        # Prepare template data including document ID for download button
+        template_data = await document_service._prepare_template_data(
+            employee_data, document_type, {}
+        )
+        template_data['document_id'] = document_id
+        template_data['download_url'] = f"/documents/download/{document_id}"
+        
+        # Generate HTML from template
+        html_content = await document_service.template_service.render_template(
+            document_type, template_data
+        )
+        
+        # Return HTML response
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/cleanup")
+async def cleanup_expired_documents_endpoint():
+    """Clean up expired documents (admin endpoint)"""
+    try:
+        cleaned_count = await document_service.cleanup_expired_documents()
+        
+        return {
+            "success": True,
+            "message": f"Cleaned up {cleaned_count} expired documents",
+            "cleaned_count": cleaned_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up expired documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/templates")
+async def get_available_templates_endpoint():
+    """Get list of available document templates"""
+    try:
+        try:
+            from services.template_service import template_service
+        except ImportError:
+            from .services.template_service import template_service
+        templates = await template_service.get_available_templates()
+        
+        return {
+            "success": True,
+            "templates": templates
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting available templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_endpoint(message: ChatMessage):
@@ -4841,6 +6039,10 @@ async def chat_endpoint(message: ChatMessage):
                 
                 return False
             
+            # Track document generation and human loop questions to suppress redundant AI confirmations
+            document_generated = False
+            human_loop_sent = False
+            
             # Temporarily disable suppression to debug blank response issue
             suppress_ai_text = False  # is_employee_query(message.message)
             logger.info(f"DEBUG: Query '{message.message}' - suppress_ai_text: {suppress_ai_text} (DISABLED FOR DEBUG)")
@@ -4848,13 +6050,46 @@ async def chat_endpoint(message: ChatMessage):
             # Async stream the response with memory
             async for chunk in langgraph_app.astream({"messages": messages}, config):
                 logger.info(f"DEBUG: Processing chunk: {list(chunk.keys())}")
+                logger.info(f"DEBUG: Full chunk structure: {str(chunk)[:500]}...")
                 
                 if "call_model" in chunk:
                     ai_message = chunk["call_model"]["messages"][-1]
                     if hasattr(ai_message, 'content') and ai_message.content:
                         logger.info(f"DEBUG: AI message content: '{ai_message.content[:100]}...'")
+                        
+                        # Check if this is a redundant confirmation after document generation or human loop questions
+                        is_redundant_confirmation = False
+                        logger.info(f"DEBUG: Checking flags - document_generated: {document_generated}, human_loop_sent: {human_loop_sent}")
+                        
+                        ai_content_lower = ai_message.content.lower()
+                        
+                        if document_generated:
+                            # Check if AI message is just confirming document generation
+                            confirmation_patterns = [
+                                'generated successfully', 'document is ready', 'letter generated',
+                                'confirmation letter', 'service letter', 'has been generated',
+                                'document generated', 'pdf generated', 'created successfully'
+                            ]
+                            # If AI message is short and contains confirmation patterns, likely redundant
+                            if len(ai_message.content) < 200 and any(pattern in ai_content_lower for pattern in confirmation_patterns):
+                                is_redundant_confirmation = True
+                                logger.info(f"DEBUG: Detected redundant AI confirmation after document generation")
+                        
+                        elif human_loop_sent:
+                            # Check if AI message is redundant employee search confirmation
+                            human_loop_patterns = [
+                                'works in our company', 'would you like to see', 'department:',
+                                'full employee details', 'role:', 'employee details'
+                            ]
+                            # If AI message is short/medium and contains human loop patterns, likely redundant
+                            if len(ai_message.content) < 300 and any(pattern in ai_content_lower for pattern in human_loop_patterns):
+                                is_redundant_confirmation = True
+                                logger.info(f"DEBUG: Detected redundant AI confirmation after human loop question")
+                        
                         if suppress_ai_text:
                             logger.info(f"DEBUG: Suppressing AI text due to employee query detection")
+                        elif is_redundant_confirmation:
+                            logger.info(f"DEBUG: Suppressing redundant AI confirmation after tool response")
                         else:
                             logger.info(f"DEBUG: Streaming AI text")
                             response_obj = {"type": "text", "content": ai_message.content}
@@ -4863,6 +6098,8 @@ async def chat_endpoint(message: ChatMessage):
                 
                 elif "call_tools" in chunk:
                     logger.info(f"DEBUG: Found tool calls chunk")
+                    logger.info(f"DEBUG: Tool calls chunk keys: {list(chunk.keys())}")
+                    logger.info(f"DEBUG: Tool calls chunk structure: {chunk}")
                     # Process tool calls to detect form requests
                     tool_messages = chunk["call_tools"]["messages"]
                     for tool_msg in tool_messages:
@@ -4875,11 +6112,64 @@ async def chat_endpoint(message: ChatMessage):
                                 else:
                                     tool_result = tool_msg.content
                                 
+                                logger.info(f"DEBUG: Tool result keys: {list(tool_result.keys()) if isinstance(tool_result, dict) else 'Not a dict'}")
+                                logger.info(f"DEBUG: Tool result success: {tool_result.get('success')}")
+                                logger.info(f"DEBUG: Tool result has document_info: {bool(tool_result.get('document_info'))}")
                                 logger.info(f"DEBUG: Tool result response_type: {tool_result.get('response_type')}")
                                 
-                                # Check if tool result indicates a form request or human loop question
+                                # Check if tool result indicates a form request, human loop question, or document generation
                                 response_type = tool_result.get('response_type')
-                                if response_type in ['form_request', 'employee_found_update_form', 'human_loop_question']:
+                                
+                                # Check for document generation success
+                                if tool_result.get('success') and tool_result.get('document_info'):
+                                    logger.info(f"DEBUG: Creating document response")
+                                    document_generated = True  # Flag to suppress redundant AI confirmation
+                                    logger.info(f"DEBUG: Set document_generated flag to True")
+                                    
+                                    document_response = {
+                                        "type": "document",
+                                        "content": tool_result.get('message', ''),
+                                        "document_info": tool_result.get('document_info', {})
+                                    }
+                                    
+                                    # Stream the document response to frontend
+                                    yield f"data: {json.dumps(document_response)}\n\n"
+                                    final_response.append(document_response)
+                                    
+                                # Fallback: Check for document generation in text content
+                                elif isinstance(tool_result, dict) and tool_result.get('success') and 'generated successfully' in str(tool_result.get('message', '')):
+                                    logger.info(f"DEBUG: Detected document generation in message text, attempting to extract document info")
+                                    document_generated = True  # Flag to suppress redundant AI confirmation
+                                    
+                                    # Try to extract document info from the full tool result
+                                    extracted_doc_info = tool_result.get('document_info')
+                                    if not extracted_doc_info:
+                                        # Try to find it in other keys
+                                        for key, value in tool_result.items():
+                                            if isinstance(value, dict) and 'document_id' in str(value):
+                                                extracted_doc_info = value
+                                                break
+                                    
+                                    if extracted_doc_info:
+                                        logger.info(f"DEBUG: Found document info in fallback: {extracted_doc_info}")
+                                        document_response = {
+                                            "type": "document",
+                                            "content": tool_result.get('message', ''),
+                                            "document_info": extracted_doc_info
+                                        }
+                                        yield f"data: {json.dumps(document_response)}\n\n"
+                                        final_response.append(document_response)
+                                    else:
+                                        logger.warning(f"DEBUG: Document generation detected but no document_info found")
+                                        # Send as regular text
+                                        text_response = {
+                                            "type": "text",
+                                            "content": str(tool_result.get('message', tool_result))
+                                        }
+                                        yield f"data: {json.dumps(text_response)}\n\n"
+                                        final_response.append(text_response)
+                                    
+                                elif response_type in ['form_request', 'employee_found_update_form', 'human_loop_question']:
                                     
                                     logger.info(f"DEBUG: Creating {response_type} response")
                                     
@@ -4900,6 +6190,9 @@ async def chat_endpoint(message: ChatMessage):
                                         }
                                     elif response_type == 'human_loop_question':
                                         # Store conversation state and send human loop question
+                                        human_loop_sent = True  # Flag to suppress redundant AI confirmation
+                                        logger.info(f"DEBUG: Set human_loop_sent flag to True")
+                                        
                                         conversation_state = tool_result.get('conversation_state', {})
                                         _store_conversation_state(thread_id, conversation_state)
                                         

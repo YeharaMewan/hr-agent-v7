@@ -162,13 +162,7 @@ const ChatView = ({ messages, setMessages }) => {
       // No loading message - just fetch data and show form
 
       // Try to fetch employee data by searching
-      const searchResponse = await fetch('http://localhost:8000/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: `show me ${employeeName} details` }),
-      });
+      const searchResponse = await apiService.sendChatMessage(`Search for employee: ${employeeName}`);
 
       if (searchResponse.ok) {
         // Parse the response to extract employee data
@@ -575,6 +569,8 @@ const ChatView = ({ messages, setMessages }) => {
           // Handle each chunk of data
           if (data.type === 'chart') {
             updateMessageWithChart(loadingMessage.id, data.payload);
+          } else if (data.type === 'document') {
+            updateMessageWithDocument(loadingMessage.id, data.content, data.document_info);
           } else if (data.type === 'text') {
             updateMessageWithText(loadingMessage.id, data.content);
           } else if (data.type === 'form_request') {
@@ -680,6 +676,20 @@ const ChatView = ({ messages, setMessages }) => {
           isLoading: false,
           hasChart: true,
           chartData: chartPayload
+        };
+      }
+      return msg;
+    }));
+  };
+
+  const updateMessageWithDocument = (messageId, textContent, documentInfo) => {
+    setMessages(prev => prev.map(msg => {
+      if (msg.id === messageId) {
+        return {
+          ...msg,
+          content: textContent || msg.content || '',
+          isLoading: false,
+          documentInfo: documentInfo
         };
       }
       return msg;
