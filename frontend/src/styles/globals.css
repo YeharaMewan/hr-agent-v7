@@ -128,6 +128,27 @@ body {
 
 .landing-container.mobile.keyboard-open .title-block {
     margin-bottom: 1rem;
+    position: fixed;
+    top: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 999;
+    background: var(--bg-color);
+    padding: 1rem 2rem;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+}
+
+.landing-container.mobile.keyboard-open .title-block .logo {
+    max-width: 120px;
+    margin-bottom: 0.5rem;
+}
+
+.landing-container.mobile.keyboard-open .title-block .subtitle {
+    font-size: 0.85rem;
+    margin-bottom: 0;
 }
 
 .landing-container.mobile.keyboard-open .suggestion-chips-container {
@@ -136,14 +157,23 @@ body {
 
 .landing-container.mobile.keyboard-open .new-input-area {
     position: fixed;
-    bottom: 20px;
-    bottom: max(20px, env(safe-area-inset-bottom, 20px));
+    /* Account for component height (48px) + border (4px) + small gap (4px) = 56px */
+    bottom: calc(var(--keyboard-height, 0px) + 56px);
+    bottom: calc(var(--keyboard-height, 0px) + 56px + env(safe-area-inset-bottom, 0px));
+    /* Reduce height for better mobile experience */
+    height: 48px;
     left: 20px;
     left: max(20px, env(safe-area-inset-left, 20px));
     right: 20px;
     right: max(20px, env(safe-area-inset-right, 20px));
     z-index: 1000;
-    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+    background: var(--bot-message-bg);
+    backdrop-filter: blur(10px);
+    border: 2px solid var(--accent-color);
+    border-radius: 24px;
+    /* Optimized padding for smaller mobile height */
+    padding: 0 8px 0 20px;
     /* Enhanced width calculation to prevent overflow */
     width: calc(100vw - 40px);
     width: calc(100vw - max(40px, env(safe-area-inset-left, 20px) + env(safe-area-inset-right, 20px) + 40px));
@@ -155,6 +185,15 @@ body {
     /* Center alignment fallback */
     margin: 0 auto;
     transform: translateX(0);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Ensure input text remains centered with smaller height */
+.landing-container.mobile.keyboard-open .landing-input {
+    font-size: 16px;
+    height: 100%;
+    display: flex;
+    align-items: center;
 }
 
 .title-block {
@@ -578,6 +617,11 @@ body {
     pointer-events: none;
 }
 
+/* Hide suggestion chips completely on mobile keyboard open */
+.chat-container.mobile.keyboard-open .chat-suggestion-chips {
+    display: none !important;
+}
+
 .chat-suggestion-chips::-webkit-scrollbar {
     display: none;
 }
@@ -664,6 +708,11 @@ body {
     border: 1px solid var(--border-color);
     max-width: 200px;
     margin: 0 auto;
+}
+
+/* Hide quick action button completely on mobile chat view */
+.chat-container.mobile .chip-toggle-button {
+    display: none !important;
 }
 
 /* Responsive Design */
@@ -1188,9 +1237,9 @@ body {
 
 .chat-container.mobile.keyboard-open .input-area-container {
     position: fixed !important;
-    /* Dynamic bottom positioning using CSS custom properties */
-    bottom: var(--input-bottom-offset, 0px) !important;
-    bottom: max(var(--input-bottom-offset, 0px), env(safe-area-inset-bottom)) !important;
+    /* Align right above the keyboard using occluded area (iOS + Android) */
+    bottom: calc(max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px)) + 8px) !important;
+    bottom: calc(max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px)) + 8px + env(safe-area-inset-bottom, 0px)) !important;
     left: 0;
     left: max(0px, env(safe-area-inset-left, 0px));
     right: 0;
@@ -1208,7 +1257,8 @@ body {
     /* Enhanced styling for better visibility */
     backdrop-filter: blur(15px);
     -webkit-backdrop-filter: blur(15px);
-    padding: 0.75rem;
+    /* Reduce vertical padding to avoid clipping */
+    padding: 0.5rem 0.75rem;
     margin: 0;
     /* Enhanced width calculation to prevent overflow (same as landing page) */
     width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px)));
@@ -1229,11 +1279,9 @@ body {
 }
 
 .chat-container.mobile.keyboard-open .chat-messages {
-    padding-bottom: 100px; /* Enhanced space for fixed input */
-    height: calc(100vh - 160px);
-    height: calc(100dvh - 160px);
-    max-height: calc(100vh - 160px);
-    max-height: calc(100dvh - 160px);
+    padding-bottom: calc(100px + max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px))); /* space for keyboard + input */
+    height: auto;
+    max-height: none;
     /* Enhanced scrolling */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
@@ -1265,17 +1313,30 @@ body {
 }
 
 /* Enhanced mobile transitions */
+.landing-container.mobile .suggestion-chips-container {
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                margin-bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                visibility 0.3s ease;
+}
+
+.landing-container.mobile .title-block {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .landing-container.mobile .new-input-area {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.landing-container.mobile .suggestion-chips-container {
-    transition: opacity 0.2s ease, transform 0.3s ease;
-}
-
 .landing-container.mobile.keyboard-open .suggestion-chips-container {
-    opacity: 0.7;
-    transform: scale(0.95);
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+    visibility: hidden;
+    pointer-events: none;
+    height: 0;
+    margin-bottom: 0;
+    overflow: hidden;
 }
 
 /* View transitions */
@@ -1292,11 +1353,7 @@ body {
 
 /* Enhanced mobile input positioning */
 @media (max-width: 600px) {
-    .chat-container.mobile.keyboard-open .input-area-container {
-        padding: 0.75rem;
-        background: var(--chat-bg);
-        backdrop-filter: blur(10px);
-    }
+    /* Removed conflicting input-area-container rule - consolidated below */
     
     .chat-container.mobile.keyboard-open .input-content-wrapper {
         max-width: 100%;
@@ -1353,37 +1410,17 @@ body {
         box-sizing: border-box !important;
     }
     
+    /* Hide quick action button completely on mobile keyboard open */
     .chat-container.mobile.keyboard-open .chip-toggle-button {
-        position: absolute !important;
-        left: 6px !important; /* Closer to edge */
-        top: 50% !important;
-        transform: translateY(-50%) !important;
-        width: 34px !important; /* Smaller for keyboard state */
-        height: 34px !important;
-        background-color: transparent !important;
-        border: 1px solid var(--border-color) !important;
-        border-radius: 50% !important;
-        color: var(--text-muted-color) !important;
-        cursor: pointer !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        z-index: 103 !important; /* Higher than input */
-        padding: 0 !important;
-        margin: 0 !important;
-        max-width: 34px !important;
-        max-height: 34px !important;
-        box-sizing: border-box !important;
-        font-size: 14px !important; /* Smaller emoji */
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+        display: none !important;
     }
     
-    /* Ensure the input container is always visible and properly styled with dynamic positioning */
+    /* Apply unified keyboard positioning (same as landing page) */
     .chat-container.mobile.keyboard-open .input-area-container {
         position: fixed !important;
-        /* Dynamic positioning above keyboard using CSS custom properties */
-        bottom: var(--input-bottom-offset, 0px) !important;
-        bottom: max(var(--input-bottom-offset, 0px), env(safe-area-inset-bottom)) !important;
+        /* Align above the keyboard using occluded bottom area */
+        bottom: calc(max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px)) + 8px) !important;
+        bottom: calc(max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px)) + 8px + env(safe-area-inset-bottom, 0px)) !important;
         left: 0;
         left: max(0px, env(safe-area-inset-left, 0px)) !important;
         right: 0;
@@ -1396,10 +1433,17 @@ body {
         transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
         z-index: 1001 !important;
         padding: 0.75rem;
+        /* Restore original chat styling */
         background: var(--chat-bg) !important;
         backdrop-filter: blur(10px);
-        border-top: 2px solid var(--border-color);
-        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3) !important;
+        border-top: 2px solid var(--accent-color);
+        /* Let content define height; ensure enough space for 48px input */
+        height: auto;
+        min-height: 64px;
+        display: flex;
+        align-items: center;
+        z-index: 1001 !important;
+        box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.3) !important;
         /* Enhanced width calculation to prevent overflow (consistent with landing page) */
         width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px))) !important;
         max-width: calc(100vw - max(0px, env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px))) !important;
@@ -1407,6 +1451,21 @@ body {
         box-sizing: border-box !important;
         /* Prevent any overflow */
         overflow: hidden !important;
+    }
+    
+    /* Optimize chat input height for mobile consistency */
+    .chat-container.mobile.keyboard-open .chat-input {
+        height: 48px !important;
+        font-size: 16px !important; /* Prevents zoom on iOS */
+        padding: 12px 50px 12px 46px !important;
+        border-radius: 24px !important;
+        border: 2px solid var(--accent-color) !important;
+        background-color: var(--bot-message-bg) !important;
+    }
+
+    /* Prevent focus scale from clipping inside the fixed container */
+    .chat-container.mobile.keyboard-open .chat-input:focus {
+        transform: none !important;
     }
     
     /* Better chat area height management */
@@ -1443,9 +1502,8 @@ body {
     
     /* Keyboard handling in landscape */
     .chat-container.mobile.keyboard-open .chat-messages {
-        padding-bottom: 70px;
-        max-height: calc(100vh - 120px);
-        max-height: calc(100dvh - 120px);
+        padding-bottom: calc(70px + max(env(keyboard-inset-height, 0px), var(--keyboard-occluded, 0px)));
+        max-height: none;
     }
     
     .chat-container.mobile.keyboard-open .input-area-container {

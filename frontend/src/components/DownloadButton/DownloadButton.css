@@ -16,7 +16,7 @@
 .download-button-container:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 16px rgba(44, 90, 160, 0.15);
-  border-color: #2c5aa0;
+  border-color: #581c87;
 }
 
 .download-button-container.expired {
@@ -42,7 +42,7 @@
 .document-name {
   font-weight: 600;
   font-size: 16px;
-  color: #2c5aa0;
+  color: #581c87;
   text-transform: capitalize;
 }
 
@@ -84,7 +84,7 @@
   justify-content: center;
   gap: 8px;
   padding: 12px 20px;
-  background: linear-gradient(135deg, #2c5aa0 0%, #1e3f73 100%);
+  background: linear-gradient(135deg, #581c87 0%, #4c1975 100%);
   color: white;
   border: none;
   border-radius: 8px;
@@ -97,7 +97,7 @@
 }
 
 .download-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1e3f73 0%, #2c5aa0 100%);
+  background: linear-gradient(135deg, #4c1975 0%, #581c87 100%);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(44, 90, 160, 0.3);
 }
@@ -313,11 +313,11 @@
   }
   
   .download-button-container:hover {
-    border-color: #6a7bb8;
+    border-color: #8b5cf6;
   }
   
   .document-name {
-    color: #8aa3ff;
+    color: #a78bfa;
   }
   
   .employee-name,

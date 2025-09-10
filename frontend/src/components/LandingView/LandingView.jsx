@@ -6,6 +6,7 @@ const LandingView = ({ onFirstMessage }) => {
   const inputRef = useRef(null);
   const [isMobile, setIsMobile] = useState(false);
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const [isInputFocused, setIsInputFocused] = useState(false);
   const [originalViewportHeight, setOriginalViewportHeight] = useState(window.innerHeight);
 
   // Mobile detection and keyboard handling
@@ -76,26 +77,51 @@ const LandingView = ({ onFirstMessage }) => {
     onFirstMessage(command);
   };
 
-  // Handle mobile input focus
-  const handleMobileInputFocus = () => {
+  // Enhanced mobile input focus handling
+  const handleInputFocus = () => {
+    setIsInputFocused(true);
     if (isMobile && inputRef.current) {
-      setTimeout(() => {
-        inputRef.current?.focus();
-        // Prevent zoom on iOS
-        inputRef.current?.setAttribute('readonly', 'readonly');
-        inputRef.current?.removeAttribute('readonly');
-      }, 100);
+      // Prevent zoom on iOS
+      inputRef.current?.setAttribute('readonly', 'readonly');
+      inputRef.current?.removeAttribute('readonly');
     }
   };
 
-  // Enhanced attendance-focused landing chips
+  const handleInputBlur = () => {
+    setIsInputFocused(false);
+  };
+
+  // Dynamic keyboard height calculation for precise alignment with keyboard edge
+  useEffect(() => {
+    if (isKeyboardOpen && isMobile) {
+      const setKeyboardHeight = () => {
+        const availableHeight = window.visualViewport?.height || window.innerHeight;
+        const keyboardHeight = originalViewportHeight - availableHeight;
+        // Use full keyboard height for precise bottom alignment - no multiplier
+        document.documentElement.style.setProperty('--keyboard-height', `${Math.max(keyboardHeight, 0)}px`);
+      };
+      
+      setKeyboardHeight();
+      
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', setKeyboardHeight);
+        return () => {
+          window.visualViewport.removeEventListener('resize', setKeyboardHeight);
+        };
+      }
+    } else {
+      document.documentElement.style.setProperty('--keyboard-height', '0px');
+    }
+  }, [isKeyboardOpen, isMobile, originalViewportHeight]);
+
+  // Working quick actions - focused on queries and reports (attendance creation/updates not implemented)
   const suggestionChips = [
-    { emoji: '✅', text: 'Mark Attendance', command: 'Mark my attendance as Present for today' },
     { emoji: '📊', text: 'Attendance Overview', command: 'Show me attendance statistics and insights for the last 30 days' },
-    { emoji: '🏠', text: 'Work From Home', command: 'Mark my attendance as Work from home for today' },
     { emoji: '📈', text: 'Department Trends', command: 'Give me attendance trends analysis for all departments' },
     { emoji: '👥', text: 'Team Performance', command: 'Show comparative attendance report for different departments' },
     { emoji: '🔍', text: 'Pattern Analysis', command: 'Provide attendance pattern analysis and recommendations' },
+    { emoji: '👤', text: 'Employee Search', command: 'Find employee details and information' },
+    { emoji: '📋', text: 'Generate Report', command: 'Create attendance summary report for last week' },
   ];
 
   return (
@@ -118,8 +144,9 @@ const LandingView = ({ onFirstMessage }) => {
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyPress={handleKeyPress}
-          onFocus={handleMobileInputFocus}
-          onTouchStart={handleMobileInputFocus}
+          onFocus={handleInputFocus}
+          onBlur={handleInputBlur}
+          onTouchStart={handleInputFocus}
           className="landing-input"
           placeholder="Ask anything about HR..."
           autoComplete="off"

@@ -265,107 +265,36 @@ const ChatView = ({ messages, setMessages }) => {
     setOriginalViewportHeight(window.visualViewport?.height || window.innerHeight);
   }, []);
 
-  // Enhanced keyboard visibility detection for mobile with dynamic positioning
+  // Simplified keyboard visibility detection (same as landing page)
   useEffect(() => {
     if (!isMobile) return;
 
     const handleViewportChange = () => {
-      const viewport = window.visualViewport || window;
-      const currentHeight = viewport.height || window.innerHeight;
-      const heightDifference = originalViewportHeight - currentHeight;
-      const keyboardThreshold = 150; // Minimum height difference to consider keyboard open
-      
-      const keyboardIsOpen = heightDifference > keyboardThreshold;
-      
-      if (keyboardIsOpen !== isKeyboardOpen) {
-        setIsKeyboardOpen(keyboardIsOpen);
-        
-        // Calculate exact keyboard height and available space
-        const keyboardHeight = Math.max(0, heightDifference);
-        const availableHeight = currentHeight;
-        const inputBottomOffset = keyboardHeight > keyboardThreshold ? Math.max(60, keyboardHeight * 0.08) : 0; // Much higher above keyboard
-        
-        // Update CSS custom properties for dynamic positioning
-        if (document.documentElement) {
-          document.documentElement.style.setProperty('--keyboard-height', `${keyboardHeight}px`);
-          document.documentElement.style.setProperty('--available-height', `${availableHeight}px`);
-          document.documentElement.style.setProperty('--input-bottom-offset', `${inputBottomOffset}px`);
-        }
-        
-        // Enhanced positioning when keyboard opens
-        if (keyboardIsOpen && inputRef.current) {
-          // Multiple positioning strategies for better compatibility
-          const positionInputAboveKeyboard = () => {
-            // Strategy 1: Use visual viewport positioning
-            const inputRect = inputRef.current?.getBoundingClientRect();
-            if (inputRect && viewport.height) {
-              // Calculate position to keep input visible above keyboard
-              const desiredInputBottom = viewport.height - 20; // 20px from top of available area
-              const currentInputBottom = inputRect.bottom;
-              
-              if (currentInputBottom > desiredInputBottom) {
-                const scrollAdjustment = currentInputBottom - desiredInputBottom;
-                window.scrollBy({
-                  top: scrollAdjustment,
-                  behavior: 'smooth'
-                });
-              }
-            }
-            
-            // Strategy 2: Ensure input container is positioned correctly
-            const inputContainer = document.querySelector('.chat-container.mobile.keyboard-open .input-area-container');
-            if (inputContainer) {
-              // Force re-calculation of fixed positioning with higher offset
-              inputContainer.style.bottom = `${inputBottomOffset}px`;
-              // Also scroll the page up to ensure full visibility
-              setTimeout(() => {
-                window.scrollBy({
-                  top: -50, // Scroll up a bit to ensure full chatbox visibility
-                  behavior: 'smooth'
-                });
-              }, 150);
-            }
-          };
-          
-          // Execute positioning with appropriate delays
-          setTimeout(positionInputAboveKeyboard, 100);
-          
-          // Additional positioning check after keyboard animation
-          setTimeout(() => {
-            if (inputRef.current && document.activeElement === inputRef.current) {
-              inputRef.current.scrollIntoView({ 
-                behavior: 'smooth', 
-                block: 'nearest',
-                inline: 'nearest'
-              });
-            }
-          }, 300);
-          
-          // Add visual feedback for keyboard state
-          if (chatContainerRef.current) {
-            chatContainerRef.current.style.transition = 'transform 0.3s ease';
-            chatContainerRef.current.style.transform = 'translateZ(0)';
-          }
-        } else if (!keyboardIsOpen) {
-          // Reset positioning when keyboard closes
-          if (document.documentElement) {
-            document.documentElement.style.setProperty('--keyboard-height', '0px');
-            document.documentElement.style.setProperty('--available-height', '100vh');
-            document.documentElement.style.setProperty('--input-bottom-offset', '0px');
-          }
-          
-          if (chatContainerRef.current) {
-            chatContainerRef.current.style.transform = '';
-          }
-        }
-      }
+      const vv = window.visualViewport;
+      const layoutH = window.innerHeight;
+      const vvH = vv?.height || layoutH;
+      const offsetTop = vv?.offsetTop || 0;
+      // Amount of the layout viewport occluded at the bottom (typically the keyboard height)
+      const occludedBottom = Math.max(layoutH - vvH - offsetTop, 0);
+      const heightDifference = Math.max(originalViewportHeight - vvH, 0);
+      const keyboardThreshold = 70; // more forgiving on iOS
+
+      const keyboardIsOpen = occludedBottom > keyboardThreshold || heightDifference > keyboardThreshold;
+      setIsKeyboardOpen(keyboardIsOpen);
+
+      // Publish CSS vars used by styles
+      document.documentElement.style.setProperty('--keyboard-occluded', `${occludedBottom}px`);
+      document.documentElement.style.setProperty('--keyboard-height', `${keyboardIsOpen ? Math.max(heightDifference, occludedBottom) : 0}px`);
+      document.documentElement.style.setProperty('--vv-offset-top', `${offsetTop}px`);
     };
 
     // Use visualViewport API if available (modern browsers)
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', handleViewportChange);
+      window.visualViewport.addEventListener('scroll', handleViewportChange);
       return () => {
         window.visualViewport.removeEventListener('resize', handleViewportChange);
+        window.visualViewport.removeEventListener('scroll', handleViewportChange);
       };
     } else {
       // Fallback for older browsers
@@ -376,96 +305,18 @@ const ChatView = ({ messages, setMessages }) => {
     }
   }, [isMobile, isKeyboardOpen, originalViewportHeight]);
 
-  // Enhanced mobile input focus with cross-device keyboard positioning
+  // Simplified mobile input focus (same as landing page)
   const handleMobileInputFocus = () => {
     if (isMobile && inputRef.current) {
-      // Small delay to ensure proper focusing
+      // Prevent zoom on iOS
+      inputRef.current?.setAttribute('readonly', 'readonly');
+      inputRef.current?.removeAttribute('readonly');
+      // Ensure the latest messages are visible when the keyboard opens
       setTimeout(() => {
-        inputRef.current?.focus();
-        // Prevent zoom on iOS
-        inputRef.current?.setAttribute('readonly', 'readonly');
-        inputRef.current?.removeAttribute('readonly');
-        
-        // Cross-device positioning strategies
-        const positionInputAboveKeyboard = () => {
-          const viewport = window.visualViewport || window;
-          const inputElement = inputRef.current;
-          const chatContainer = chatContainerRef.current;
-          
-          if (!inputElement || !chatContainer) return;
-          
-          // Device-specific positioning strategies
-          const userAgent = navigator.userAgent.toLowerCase();
-          const isIOS = /iphone|ipad|ipod/.test(userAgent);
-          const isAndroid = /android/.test(userAgent);
-          
-          // Get current dimensions
-          const inputRect = inputElement.getBoundingClientRect();
-          const currentHeight = viewport.height || window.innerHeight;
-          const keyboardHeight = originalViewportHeight - currentHeight;
-          
-          if (keyboardHeight > 150) {
-            // iOS-specific handling
-            if (isIOS) {
-              // iOS needs higher positioning to be fully visible
-              const inputBottomOffset = Math.max(50, keyboardHeight * 0.15);
-              document.documentElement.style.setProperty('--input-bottom-offset', `${inputBottomOffset}px`);
-              
-              // Smooth scroll to ensure visibility
-              setTimeout(() => {
-                inputElement.scrollIntoView({ 
-                  behavior: 'smooth', 
-                  block: 'start', // Changed to start for higher positioning
-                  inline: 'nearest'
-                });
-              }, 150);
-            }
-            // Android-specific handling
-            else if (isAndroid) {
-              // Android needs much more aggressive positioning to be visible
-              const inputBottomOffset = Math.max(80, keyboardHeight * 0.18);
-              document.documentElement.style.setProperty('--input-bottom-offset', `${inputBottomOffset}px`);
-              
-              // Force container repositioning for Android
-              const inputContainer = document.querySelector('.chat-container.mobile.keyboard-open .input-area-container');
-              if (inputContainer) {
-                inputContainer.style.bottom = `${inputBottomOffset}px`;
-                inputContainer.style.position = 'fixed';
-              }
-              
-              // Additional scroll adjustment - scroll page up more
-              setTimeout(() => {
-                const newInputRect = inputElement.getBoundingClientRect();
-                if (newInputRect.bottom > currentHeight - 100) {
-                  window.scrollBy({
-                    top: newInputRect.bottom - currentHeight + 120, // Increased scroll amount
-                    behavior: 'smooth'
-                  });
-                }
-              }, 200);
-            }
-            // Fallback for other devices
-            else {
-              const inputBottomOffset = Math.max(70, keyboardHeight * 0.15);
-              document.documentElement.style.setProperty('--input-bottom-offset', `${inputBottomOffset}px`);
-              
-              // Standard scrollIntoView with higher positioning
-              setTimeout(() => {
-                inputElement.scrollIntoView({ 
-                  behavior: 'smooth', 
-                  block: 'start', // Changed to start for higher positioning
-                  inline: 'nearest'
-                });
-              }, 100);
-            }
-          }
-        };
-        
-        // Execute positioning with device-appropriate delays
-        const userAgent = navigator.userAgent.toLowerCase();
-        const delay = /iphone|ipad|ipod/.test(userAgent) ? 300 : 200;
-        setTimeout(positionInputAboveKeyboard, delay);
-      }, 100);
+        try {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } catch _() {}
+      }, 50);
     }
   };
 
@@ -863,31 +714,31 @@ const ChatView = ({ messages, setMessages }) => {
     setChipsHidden(!chipsHidden);
   };
 
-  // Enhanced attendance-focused suggestion chips
+  // Working quick actions - focused on queries and reports (attendance creation/updates not implemented)
   const chatSuggestionChips = [
-    // Quick Attendance Actions
-    { emoji: '✅', text: 'Mark Present', command: 'Mark my attendance as Present for today' },
-    { emoji: '🏠', text: 'Work From Home', command: 'Mark my attendance as Work from home for today' },
-    { emoji: '📅', text: 'Plan Leave', command: 'Mark my attendance as Planned Leave for tomorrow' },
-    { emoji: '🏥', text: 'Medical Leave', command: 'Mark my attendance as Medical Leave for today' },
-    
-    // Attendance Reports & Analytics
+    // Attendance Reports & Analytics (Working)
     { emoji: '📊', text: 'My Summary', command: 'Show my attendance summary for the last 30 days with insights' },
     { emoji: '📈', text: 'Department Trends', command: 'Give me attendance trends analysis for all departments in the last 2 weeks' },
     { emoji: '🔍', text: 'Attendance Insights', command: 'Provide attendance insights and pattern analysis for the last 30 days' },
     { emoji: '⚖️', text: 'Compare Teams', command: 'Generate a comparative attendance report for different departments' },
     
-    // Advanced Operations
-    { emoji: '📝', text: 'Update Yesterday', command: 'Update my attendance for yesterday to Work from home' },
-    { emoji: '✔️', text: 'Validate Data', command: 'Validate attendance data for Thavindu with status Present for today' },
-    { emoji: '👥', text: 'Team Report', command: 'Show detailed attendance report for Construction department last 7 days' },
+    // Employee Management (Working)
+    { emoji: '�', text: 'Team Report', command: 'Show detailed attendance report for Construction department last 7 days' },
     { emoji: '🎯', text: 'Employee Lookup', command: 'Find all employees in the IT department and their recent attendance' },
+    { emoji: '�', text: 'Add Employee', command: 'I need to add a new employee to the system' },
+    { emoji: '✏️', text: 'Update Employee', command: 'I need to update employee details' },
     
-    // Statistics & Visualization
+    // Statistics & Visualization (Working)
     { emoji: '🍰', text: 'Pie Chart Stats', command: 'Show attendance statistics as a pie chart for the last 14 days' },
     { emoji: '📋', text: 'Summary Report', command: 'Generate summary attendance report for all employees last week' },
     { emoji: '📊', text: 'Weekly Trends', command: 'Show weekly attendance trends with day-of-week analysis' },
     { emoji: '🏢', text: 'Org Overview', command: 'Give me organization-wide attendance insights and recommendations' },
+    
+    // Document Generation (Working)
+    { emoji: '📄', text: 'Service Letter', command: 'Generate a service letter for an employee' },
+    { emoji: '📝', text: 'Confirmation Letter', command: 'Generate a confirmation letter for an employee' },
+    { emoji: '🔍', text: 'Search Employee', command: 'Find employee details by name' },
+    { emoji: '📈', text: 'Task Overview', command: 'Show me task summary and project status' },
   ];
 
   const LoadingDots = () => (
