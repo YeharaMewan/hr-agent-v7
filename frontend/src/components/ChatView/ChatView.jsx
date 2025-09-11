@@ -315,7 +315,7 @@ const ChatView = ({ messages, setMessages }) => {
       setTimeout(() => {
         try {
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-        } catch _() {}
+        } catch (_) {}
       }, 50);
     }
   };
