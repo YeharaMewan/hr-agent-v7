@@ -285,7 +285,7 @@ body {
 
 /* Suggestion Chips - Mobile First */
 .suggestion-chips-container {
-    display: grid;
+    display: none; /* Hide by default on mobile */
     grid-template-columns: 1fr;
     gap: var(--space-sm);
     margin-bottom: var(--space-lg);
@@ -296,6 +296,7 @@ body {
 /* Small mobile - 2 columns */
 @media (min-width: 480px) {
     .suggestion-chips-container {
+        display: grid; /* Show on larger mobile screens */
         grid-template-columns: repeat(2, 1fr);
         gap: var(--space-md);
     }
