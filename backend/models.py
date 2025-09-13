@@ -502,6 +502,39 @@ class TaskIntelligentQuery(BaseModel):
     include_completed: bool = True
     limit: Optional[int] = None
 
+# Enhanced Attendance Query and Response Models
+class AttendanceQueryClarificationResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "attendance_clarification"
+    query_analysis: dict  # Contains parsed query components and what's missing/ambiguous
+    clarification_needed: List[str]  # What needs clarification: ["department", "date_range", "specific_date"]
+    suggestions: dict  # Contains suggested departments, date options, etc.
+    follow_up_questions: List[str] = []
+    user_query: str  # Original user query for context
+
+class AttendanceAmbiguousQueryResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "ambiguous_attendance_query"
+    detected_intent: str  # "department_attendance", "employee_attendance", etc.
+    ambiguous_elements: List[str]  # ["unknown_department", "vague_date", etc.]
+    suggested_clarifications: List[dict]  # List of clarification options
+    conversation_state: dict  # Track what action to take on confirmation
+    follow_up_questions: List[str] = []
+    pending_action: str = "attendance_query"
+
+class AttendanceDepartmentNotFoundResponse(BaseModel):
+    success: bool = True
+    message: str
+    response_type: str = "attendance_department_not_found"
+    searched_department: str
+    similar_departments: List[str] = []
+    available_departments: List[str] = []
+    conversation_state: dict
+    follow_up_questions: List[str] = []
+    pending_action: str = "attendance_query_with_department"
+
 # Enhanced Labour Query and Response Models
 class LabourWorkloadStatus(str, Enum):
     AVAILABLE = "available"

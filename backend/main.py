@@ -164,6 +164,7 @@ try:
         IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
         MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
         LabourTaskAssignmentSummary,
+        AttendanceQueryClarificationResponse, AttendanceAmbiguousQueryResponse, AttendanceDepartmentNotFoundResponse,
         Department, ChatMessage, APIResponse, AttendanceStatistics,
         EmployeeCreateRequest, EmployeeUpdateRequest
     )
@@ -178,6 +179,7 @@ except ImportError:
         IndividualLabourResponse, LabourSkillGroupResponse, LabourWorkloadAnalysisResponse, 
         MultipleLabourersResponse, LabourStatisticsResponse, LabourNotFoundResponse, LabourHumanLoopQuestionResponse,
         LabourTaskAssignmentSummary,
+        AttendanceQueryClarificationResponse, AttendanceAmbiguousQueryResponse, AttendanceDepartmentNotFoundResponse,
         Department, ChatMessage, APIResponse, AttendanceStatistics,
         EmployeeCreateRequest, EmployeeUpdateRequest
     )
@@ -3076,6 +3078,10 @@ def _handle_confirmation_followup(message: str, conversation_state: Dict[str, An
             # User wants to see employee details - return info (no form)
             return _build_employee_details_response(conversation_state)
         
+        # Handle attendance-related confirmations
+        elif pending_action in ['attendance_query', 'attendance_query_with_department', 'attendance_drill_down']:
+            return _handle_attendance_confirmation_followup(user_message, conversation_state)
+        
         # Default fallback - analyze primary action
         elif pending_action == 'create_employee':
             return _build_create_form_response(conversation_state)
@@ -3113,6 +3119,159 @@ def _clear_conversation_state(user_session: str) -> None:
     """Clear conversation state for user session"""
     if user_session in _conversation_states:
         del _conversation_states[user_session]
+
+def _handle_attendance_confirmation_followup(user_message: str, conversation_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handle user responses to attendance clarification questions.
+    
+    Process user selections like:
+    - "just yesterday" / "1" / "yesterday only"
+    - "this week" / "2" / "week"
+    - "custom range" / "3" / "custom"
+    - Department names for department selection
+    """
+    try:
+        user_msg_lower = user_message.lower().strip()
+        pending_action = conversation_state.get('pending_action', '')
+        original_query = conversation_state.get('original_query', '')
+        query_analysis = conversation_state.get('query_analysis', {})
+        
+        logger.info(f"DEBUG: Processing attendance confirmation - user: '{user_message}', action: '{pending_action}'")
+        
+        # Handle department selection responses
+        if pending_action == 'attendance_query_with_department':
+            # User is selecting a department
+            selected_dept = None
+            
+            # Direct department name matching
+            dept_keywords = {
+                'marketing': ['marketing', 'marketing team', '1'],
+                'hr': ['hr', 'human resources', 'hr team', '2'], 
+                'it': ['it', 'tech', 'technology', 'tech team', '3'],
+                'rise ai': ['rise ai', 'ai', 'artificial intelligence', '4'],
+                'ramstudios': ['ramstudios', 'ram studios', '5'],
+                'construction': ['construction', '6'],
+                'finance': ['finance', 'accounting', '7']
+            }
+            
+            for dept, keywords in dept_keywords.items():
+                if any(keyword in user_msg_lower for keyword in keywords):
+                    selected_dept = dept
+                    break
+            
+            if selected_dept:
+                # Build new query with selected department
+                detected_date = query_analysis.get('detected_date', 'yesterday')
+                new_query = f"{selected_dept} department attendance {detected_date}"
+                
+                # Call the attendance query function directly
+                return query_attendance_intelligent(new_query)
+            else:
+                return {
+                    "success": False,
+                    "message": "I didn't recognize that department. Please choose from: marketing, hr, it, rise ai, ramstudios, construction, finance",
+                    "response_type": "clarification_needed"
+                }
+        
+        # Handle attendance drill-down responses
+        elif pending_action == 'attendance_drill_down':
+            date_range = conversation_state.get('date_range', {})
+            available_departments = conversation_state.get('available_departments', [])
+            
+            # Check if user is asking for a specific department
+            detected_dept = None
+            dept_keywords = {
+                'marketing': ['marketing', '1'],
+                'ramstudios': ['ramstudios', 'ram studios', 'games', '2'], 
+                'it': ['it', 'tech', 'rise ai', 'ai', '3'],
+                'hr': ['hr', 'human resources', '4'],
+                'construction': ['construction', '5'],
+                'finance': ['finance', 'accounting', '6']
+            }
+            
+            for dept, keywords in dept_keywords.items():
+                if any(keyword in user_msg_lower for keyword in keywords):
+                    detected_dept = dept
+                    break
+            
+            if detected_dept:
+                # User selected a specific department
+                start_date = date_range.get('start')
+                end_date = date_range.get('end')
+                new_query = f"{detected_dept} attendance from {start_date} to {end_date}"
+                return query_attendance_intelligent(new_query)
+                
+            elif any(phrase in user_msg_lower for phrase in ['trend', 'trends', 'months', 'past few months', 'historical']):
+                return {
+                    "success": True,
+                    "message": "I can show attendance trends, but I'd need to implement trend analysis functionality. For now, would you like to see attendance for a specific month? Try: 'show me all department attendance last month'",
+                    "response_type": "text"
+                }
+                
+            elif any(phrase in user_msg_lower for phrase in ['issues', 'problems', 'low attendance', 'absent']):
+                return {
+                    "success": True,
+                    "message": "To show departments with attendance issues, I can show you departments with attendance rates below 85%. Would you like me to analyze the current data for departments with high absence rates?",
+                    "response_type": "text"
+                }
+                
+            elif any(phrase in user_msg_lower for phrase in ['individual', 'employee records', 'employees', 'names']):
+                return {
+                    "success": True,
+                    "message": "Which department would you like to see individual employee records for? Please specify: marketing, ramstudios, it, hr, construction, finance, or others.",
+                    "response_type": "text"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Please choose from the available options or specify a department name (marketing, ramstudios, it, hr, etc.)",
+                    "response_type": "clarification_needed"
+                }
+        
+        # Handle date range selection responses  
+        elif pending_action == 'attendance_query':
+            detected_dept = query_analysis.get('detected_department', '')
+            
+            # Date option matching
+            if any(phrase in user_msg_lower for phrase in ['just yesterday', 'yesterday only', 'yesterday', '1']):
+                new_query = f"{detected_dept} department attendance yesterday"
+                return query_attendance_intelligent(new_query)
+                
+            elif any(phrase in user_msg_lower for phrase in ['this week', 'week', 'current week', '2']):
+                new_query = f"{detected_dept} department attendance this week"
+                return query_attendance_intelligent(new_query)
+                
+            elif any(phrase in user_msg_lower for phrase in ['last week', 'previous week', '3']):
+                new_query = f"{detected_dept} department attendance last week"
+                return query_attendance_intelligent(new_query)
+                
+            elif any(phrase in user_msg_lower for phrase in ['custom', 'custom range', 'date range', '4']):
+                return {
+                    "success": True,
+                    "message": "Please specify your custom date range. For example: 'ramstudios attendance from 2024-09-01 to 2024-09-10' or 'ramstudios attendance last month'",
+                    "response_type": "text"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Please choose: 1) Just yesterday, 2) This week, 3) Last week, or 4) Custom range",
+                    "response_type": "clarification_needed"
+                }
+        
+        # Fallback
+        return {
+            "success": False,
+            "message": "I didn't understand your selection. Please try again or be more specific.",
+            "response_type": "clarification_needed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error handling attendance confirmation followup: {str(e)}")
+        return {
+            "success": False,
+            "message": f"An error occurred while processing your attendance request: {str(e)}",
+            "response_type": "error"
+        }
 
 def _validate_employee_data(name: str, email: str, role: str, department: str, operation: str) -> Dict[str, Any]:
     """Validate employee data for creation or update"""
@@ -3744,6 +3903,354 @@ def ask_company_documents(query: str) -> str:
 # UNIFIED ATTENDANCE TOOLS (CRUD Operations)
 # ==============================================================================
 
+def detect_ambiguous_attendance_query(query: str) -> Dict[str, Any]:
+    """
+    Detect if an attendance query is ambiguous and needs clarification.
+    
+    Returns clarification response if query is ambiguous, or None if query is clear.
+    
+    Detects ambiguity in:
+    - Unknown department names
+    - Vague date references without context
+    - Missing critical parameters
+    - Conflicting information
+    """
+    import re
+    from datetime import datetime, timedelta, date
+    from difflib import get_close_matches
+    
+    try:
+        query_lower = query.lower().strip()
+        
+        # Known department patterns (expand from existing mapping)
+        known_departments = {
+            'marketing': ['marketing', 'marketing team'],
+            'hr': ['hr', 'human resources', 'hr team'], 
+            'it': ['it', 'tech', 'technology', 'tech team'],
+            'rise ai': ['rise ai', 'ai', 'artificial intelligence'],
+            'construction': ['construction'],
+            'agriculture': ['agriculture'],
+            'landscape': ['landscape'], 
+            'mechanical': ['mechanical'],
+            'electrical': ['electrical'],
+            'architecture': ['architecture'],
+            'house keeping': ['house keeping', 'housekeeping'],
+            'heavy machinery': ['heavy machinery'],
+            'kitchen': ['kitchen'],
+            'qbit': ['qbit'],
+            'games': ['games'],
+            'ramstudios': ['ramstudios', 'ram studios'],
+            'finance': ['finance', 'accounting', 'finance team'],
+            'operations': ['operations', 'ops', 'operations team']
+        }
+        
+        # Analysis results
+        query_analysis = {
+            'original_query': query,
+            'detected_department': None,
+            'detected_date': None,
+            'detected_employee': None,
+            'has_department': False,
+            'has_date': False,
+            'has_employee': False,
+            'department_confidence': 'none'  # none, low, medium, high
+        }
+        
+        ambiguous_elements = []
+        clarification_needed = []
+        suggestions = {}
+        
+        # 1. Detect department references
+        dept_matches = []
+        for dept_key, patterns in known_departments.items():
+            for pattern in patterns:
+                if pattern in query_lower:
+                    dept_matches.append((dept_key, pattern, len(pattern)))
+                    query_analysis['has_department'] = True
+                    query_analysis['detected_department'] = dept_key
+        
+        # If multiple department matches, use the longest/most specific
+        if len(dept_matches) > 1:
+            dept_matches.sort(key=lambda x: x[2], reverse=True)
+            query_analysis['detected_department'] = dept_matches[0][0]
+        
+        # Check for unknown department-like words
+        unknown_dept_pattern = r'\b(\w+)\s+(?:department|team|dept)\b|\b(?:department|team|dept)\s+(\w+)\b'
+        dept_matches_regex = re.findall(unknown_dept_pattern, query_lower)
+        
+        unknown_dept_candidates = []
+        for match_tuple in dept_matches_regex:
+            for match in match_tuple:
+                if match and match not in [item for sublist in known_departments.values() for item in sublist]:
+                    unknown_dept_candidates.append(match)
+        
+        # Check for potential department names that don't match known ones
+        potential_dept_words = re.findall(r'\b[a-zA-Z]+(?:studios?|tech|labs?|corp|inc|team|dept|department)\b', query_lower)
+        for word in potential_dept_words:
+            if not any(word in patterns for patterns in known_departments.values()):
+                unknown_dept_candidates.append(word)
+        
+        # If we found unknown department candidates, check for fuzzy matches
+        if unknown_dept_candidates and not query_analysis['has_department']:
+            all_known_dept_names = [name for patterns in known_departments.values() for name in patterns]
+            
+            for candidate in unknown_dept_candidates:
+                close_matches = get_close_matches(candidate, all_known_dept_names, n=3, cutoff=0.6)
+                if close_matches:
+                    ambiguous_elements.append('unknown_department')
+                    clarification_needed.append('department')
+                    suggestions['departments'] = {
+                        'searched': candidate,
+                        'suggestions': close_matches,
+                        'all_departments': list(known_departments.keys())
+                    }
+                    query_analysis['department_confidence'] = 'low'
+                    break
+        elif query_analysis['has_department']:
+            query_analysis['department_confidence'] = 'high'
+        
+        # 2. Detect date references
+        date_patterns = {
+            'today': 'specific',
+            'yesterday': 'specific_but_vague',  # Could be ambiguous without context
+            'tomorrow': 'specific',
+            'this week': 'range',
+            'last week': 'range',
+            'this month': 'range',
+            'last month': 'range'
+        }
+        
+        detected_dates = []
+        for pattern, date_type in date_patterns.items():
+            if pattern in query_lower:
+                detected_dates.append((pattern, date_type))
+                query_analysis['has_date'] = True
+                query_analysis['detected_date'] = pattern
+        
+        # Check for specific date patterns (YYYY-MM-DD)
+        specific_date_pattern = r'\b(\d{4}-\d{2}-\d{2})\b'
+        specific_dates = re.findall(specific_date_pattern, query)
+        if specific_dates:
+            query_analysis['has_date'] = True
+            query_analysis['detected_date'] = 'specific_date'
+        
+        # 3. Detect employee name references
+        name_patterns = [
+            r"for\s+([A-Za-z\s]+?)(?:\s|$)",
+            r"([A-Za-z]+\s+[A-Za-z]+)'s",
+            r'"([^"]+)"',
+            r"'([^']+)'"
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, query)
+            if match:
+                potential_name = match.group(1).strip()
+                exclude_words = [
+                    'attendance', 'team', 'department', 'today', 'yesterday', 'this', 'week', 'month',
+                    'last', 'next', 'report', 'summary', 'overview', 'all', 'everyone', 'complete'
+                ]
+                if not any(word in potential_name.lower() for word in exclude_words):
+                    query_analysis['has_employee'] = True
+                    query_analysis['detected_employee'] = potential_name
+                    break
+        
+        # 4. Determine if query is ambiguous based on context
+        
+        # Case 1: Department + vague date without context
+        if (query_analysis['has_department'] and 
+            query_analysis['detected_date'] == 'yesterday' and 
+            'give me' in query_lower and
+            not query_analysis['has_employee']):
+            
+            ambiguous_elements.append('vague_date_context')
+            clarification_needed.append('date_range')
+            
+            today = date.today()
+            yesterday = today - timedelta(days=1)
+            
+            suggestions['date_options'] = [
+                {
+                    'option': 'just_yesterday',
+                    'label': f'Just yesterday ({yesterday.strftime("%Y-%m-%d")})',
+                    'description': f'Only {yesterday.strftime("%B %d, %Y")}'
+                },
+                {
+                    'option': 'this_week', 
+                    'label': 'This week',
+                    'description': 'Monday to today'
+                },
+                {
+                    'option': 'last_week',
+                    'label': 'Last week', 
+                    'description': 'Full previous week'
+                },
+                {
+                    'option': 'custom_range',
+                    'label': 'Custom date range',
+                    'description': 'Specify your own date range'
+                }
+            ]
+        
+        # Case 2: No department but department-like intent
+        # Check for comprehensive report patterns first (skip ambiguity for these)
+        comprehensive_patterns = [
+            'all department', 'all departments', 'all attendance', 'complete attendance',
+            'attendance for all', 'total attendance', 'department summary', 
+            'attendance summary', 'attendance overview', 'attendance report',
+            'complete report', 'all employees attendance', 'all employee attendance', 'everyone attendance'
+        ]
+        
+        is_comprehensive_query = any(pattern in query_lower for pattern in comprehensive_patterns)
+        
+        # Debug logging for comprehensive query detection
+        logger.info(f"DEBUG: Comprehensive query check for '{query_lower}': {is_comprehensive_query}")
+        if is_comprehensive_query:
+            for pattern in comprehensive_patterns:
+                if pattern in query_lower:
+                    logger.info(f"DEBUG: Matched comprehensive pattern: '{pattern}'")
+        
+        dept_intent_keywords = ['team', 'department', 'dept', 'attendance']
+        if (any(keyword in query_lower for keyword in dept_intent_keywords) and 
+            not query_analysis['has_department'] and
+            not query_analysis['has_employee'] and
+            not is_comprehensive_query):  # Skip ambiguity for comprehensive queries
+            
+            ambiguous_elements.append('missing_department')
+            clarification_needed.append('department')
+            suggestions['departments'] = {
+                'all_departments': list(known_departments.keys()),
+                'popular': ['marketing', 'hr', 'it', 'ramstudios', 'rise ai']
+            }
+        
+        # Case 3: No date context for attendance query
+        # Don't flag as ambiguous if department + comprehensive keywords are present
+        has_department_and_comprehensive = (
+            query_analysis['has_department'] and 
+            is_comprehensive_query
+        )
+        
+        if ('attendance' in query_lower and 
+            not query_analysis['has_date'] and
+            not any(word in query_lower for word in ['all', 'complete', 'summary', 'overview']) and
+            not has_department_and_comprehensive):
+            
+            ambiguous_elements.append('missing_date')
+            clarification_needed.append('date_range')
+            
+            today = date.today()
+            suggestions['date_options'] = [
+                {
+                    'option': 'today',
+                    'label': f'Today ({today.strftime("%Y-%m-%d")})',
+                    'description': f'Today only - {today.strftime("%B %d, %Y")}'
+                },
+                {
+                    'option': 'yesterday',
+                    'label': f'Yesterday ({(today - timedelta(days=1)).strftime("%Y-%m-%d")})',
+                    'description': f'Yesterday only'
+                },
+                {
+                    'option': 'this_week',
+                    'label': 'This week',
+                    'description': 'Monday to today'
+                }
+            ]
+        
+        # If we found ambiguities, return clarification response
+        if ambiguous_elements:
+            # Build clarification message
+            dept_name = query_analysis.get('detected_department', 'the department')
+            
+            if 'unknown_department' in ambiguous_elements:
+                searched_dept = suggestions['departments'].get('searched', 'unknown department')
+                similar_depts = suggestions['departments'].get('suggestions', [])
+                
+                message = f"I couldn't find a department matching '{searched_dept}'. "
+                if similar_depts:
+                    message += f"Did you mean: {', '.join(similar_depts)}? "
+                message += f"Or please choose from: {', '.join(suggestions['departments']['all_departments'][:5])}..."
+                
+                return {
+                    "success": True,
+                    "message": message,
+                    "response_type": "attendance_department_not_found",
+                    "searched_department": searched_dept,
+                    "similar_departments": similar_depts,
+                    "available_departments": suggestions['departments']['all_departments'],
+                    "conversation_state": {
+                        "pending_action": "attendance_query_with_department",
+                        "original_query": query,
+                        "query_analysis": query_analysis
+                    },
+                    "follow_up_questions": [
+                        f"Which department would you like attendance for?",
+                        "Would you like me to show all available departments?"
+                    ]
+                }
+            
+            elif 'vague_date_context' in ambiguous_elements:
+                message = f"I found the {dept_name} department. For attendance data, would you like:"
+                
+                return {
+                    "success": True,
+                    "message": message,
+                    "response_type": "attendance_clarification",
+                    "query_analysis": query_analysis,
+                    "clarification_needed": clarification_needed,
+                    "suggestions": suggestions,
+                    "user_query": query,
+                    "follow_up_questions": [
+                        f"Just yesterday's attendance for {dept_name}?",
+                        f"This week's attendance for {dept_name}?",
+                        f"A custom date range for {dept_name}?"
+                    ]
+                }
+            
+            else:
+                # General ambiguous query
+                message = "I need some clarification about your attendance request. "
+                
+                if 'missing_department' in ambiguous_elements:
+                    message += "Which department would you like attendance for? "
+                
+                if 'missing_date' in ambiguous_elements:
+                    message += "And which date or date range? "
+                
+                return {
+                    "success": True,
+                    "message": message,
+                    "response_type": "ambiguous_attendance_query", 
+                    "detected_intent": "department_attendance",
+                    "ambiguous_elements": ambiguous_elements,
+                    "suggested_clarifications": [
+                        {
+                            "type": "department_selection",
+                            "options": suggestions.get('departments', {}).get('all_departments', [])
+                        },
+                        {
+                            "type": "date_selection", 
+                            "options": suggestions.get('date_options', [])
+                        }
+                    ],
+                    "conversation_state": {
+                        "pending_action": "attendance_query",
+                        "original_query": query,
+                        "query_analysis": query_analysis
+                    },
+                    "follow_up_questions": [
+                        "Which department are you asking about?",
+                        "What date or date range do you need?"
+                    ]
+                }
+        
+        # No ambiguity detected - query is clear enough to proceed
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error detecting query ambiguity: {str(e)}")
+        return None
+
 @tool
 def query_attendance_intelligent(query: str) -> Dict[str, Any]:
     """
@@ -3773,6 +4280,11 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
     - filters_applied: What filters were understood from the query
     """
     try:
+        # First, check if the query is ambiguous and needs clarification
+        clarification_response = detect_ambiguous_attendance_query(query)
+        if clarification_response:
+            return clarification_response
+        
         import re
         from datetime import datetime, timedelta, date
         
@@ -3821,24 +4333,128 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             start_date = datetime.strptime(dates_found[0], '%Y-%m-%d').date()
             end_date = datetime.strptime(dates_found[1], '%Y-%m-%d').date()
         
-        # Extract department information
-        dept_patterns = [
-            r'(?:department|team|dept)\s+(\w+)',
-            r'(\w+)\s+(?:department|team|dept)',
-            r'rise\s+ai\s+team',
-            r'marketing\s+team',
-            r'hr\s+team',
-            r'tech\s+team'
+        # Extract department information using comprehensive patterns (synced with employee function)
+        dept_patterns = {
+            'marketing': ['marketing', 'marketing team'],
+            'hr': ['hr', 'human resources', 'hr team'], 
+            'it': ['it', 'tech', 'technology', 'tech team'],
+            'rise ai': ['rise ai', 'ai', 'artificial intelligence'],
+            'construction': ['construction'],
+            'agriculture': ['agriculture'],
+            'landscape': ['landscape'], 
+            'mechanical': ['mechanical'],
+            'electrical': ['electrical'],
+            'architecture': ['architecture'],
+            'house keeping': ['house keeping', 'housekeeping'],
+            'heavy machinery': ['heavy machinery'],
+            'kitchen': ['kitchen'],
+            'qbit': ['qbit'],
+            'games': ['games'],
+            'ramstudios': ['ramstudios', 'ram studios'],
+            'finance': ['finance', 'accounting', 'finance team'],
+            'operations': ['operations', 'ops', 'operations team']
+        }
+        
+        # Check for direct department name matches with enhanced pattern detection
+        detected_patterns = []
+        for dept_key, patterns in dept_patterns.items():
+            for pattern in patterns:
+                if pattern in query_lower:
+                    detected_patterns.append((dept_key, pattern, len(pattern)))
+        
+        # If multiple matches, prioritize by pattern length (more specific)
+        if detected_patterns:
+            detected_patterns.sort(key=lambda x: x[2], reverse=True)
+            department = detected_patterns[0][0]
+            logger.info(f"DEBUG: Department pattern matched - '{detected_patterns[0][1]}' → {department}")
+        
+        # Additional fallback detection for word order variations
+        if not department:
+            # Try to detect department names anywhere in the query
+            dept_name_patterns = [
+                r'\b(ramstudios?|ram\s*studio?s?)\b',
+                r'\b(games?)\b',
+                r'\b(rise\s*ai|artificial\s*intelligence)\b',  
+                r'\b(marketing)\b',
+                r'\b(hr|human\s*resources)\b',
+                r'\b(construction)\b',
+                r'\b(finance|accounting)\b'
+            ]
+            
+            dept_mapping = {
+                'ramstudios': 'ramstudios', 'ramstudio': 'ramstudios', 'ram studios': 'ramstudios', 'ram studio': 'ramstudios',
+                'games': 'ramstudios', 'game': 'ramstudios',
+                'rise ai': 'rise ai', 'artificial intelligence': 'rise ai',
+                'marketing': 'marketing',
+                'hr': 'hr', 'human resources': 'hr', 
+                'construction': 'construction',
+                'finance': 'finance', 'accounting': 'finance'
+            }
+            
+            for pattern in dept_name_patterns:
+                import re
+                match = re.search(pattern, query_lower, re.IGNORECASE)
+                if match:
+                    matched_text = match.group(1).replace(' ', ' ').strip()
+                    if matched_text in dept_mapping:
+                        department = dept_mapping[matched_text]
+                        logger.info(f"DEBUG: Fallback department detection - '{matched_text}' → {department}")
+                        break
+        
+        # Map user-friendly department names to database department names
+        def map_department_to_database_name(dept_name: str) -> str:
+            """Map user department names to actual database department names"""
+            if not dept_name:
+                return None
+                
+            dept_mapping = {
+                'ramstudios': 'GAMES/RamStudios',
+                'games': 'GAMES/RamStudios', 
+                'rise ai': 'IT/Rise AI',
+                'ai': 'IT/Rise AI',
+                'it': 'IT/Rise AI',
+                'tech': 'IT/Rise AI',
+                'technology': 'IT/Rise AI',
+                'marketing': 'Marketing',
+                'hr': 'Hr',
+                'human resources': 'Hr',
+                'construction': 'Construction',
+                'agriculture': 'Agriculture', 
+                'landscape': 'Landscape',
+                'mechanical': 'Mechanical',
+                'electrical': 'Electrical',
+                'architecture': 'Architecture',
+                'house keeping': 'House Keeping',
+                'housekeeping': 'House Keeping',
+                'heavy machinery': 'Heavy Machinery',
+                'kitchen': 'Kitchen',
+                'qbit': 'Qbit',
+                'finance': 'Finance',
+                'operations': 'Operations'
+            }
+            
+            return dept_mapping.get(dept_name.lower(), dept_name)
+        
+        # Apply department mapping for database compatibility
+        if department:
+            original_department = department
+            department = map_department_to_database_name(department)
+            logger.info(f"DEBUG: Department detection SUCCESS - Original: '{original_department}' → Mapped: '{department}'")
+        else:
+            logger.info(f"DEBUG: Department detection FAILED - No department detected in query: '{query}'")
+        
+        # Early determination of comprehensive report status (needed for date defaulting)
+        comprehensive_keywords = [
+            'attendance report', 'weekly report', 'monthly report', 'report for',
+            'attendance summary', 'all employees', 'everyone', 'complete report',
+            'attendance overview', 'weekly attendance', 'monthly attendance',
+            # Add new all department patterns
+            'all department', 'all departments', 'all attendance', 'complete attendance',
+            'attendance for all', 'total attendance', 'department summary',
+            'all employees attendance', 'all employee attendance', 'everyone attendance', 'show all attendance'
         ]
         
-        for pattern in dept_patterns:
-            match = re.search(pattern, query_lower)
-            if match:
-                if "rise ai" in query_lower or "rise ai team" in query_lower:
-                    department = "rise ai"
-                else:
-                    department = match.group(1) if match.groups() else match.group(0)
-                break
+        is_comprehensive_report = any(keyword in query_lower for keyword in comprehensive_keywords)
         
         # Extract employee name (look for quoted names or common name patterns)
         name_patterns = [
@@ -3883,10 +4499,15 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
                     status_filter = [status]
                 break
         
-        # If no specific date is mentioned and no "today" keyword, default to today for daily queries
+        # If no specific date is mentioned and no "today" keyword, default to appropriate range
         if not start_date and not end_date:
             if any(word in query_lower for word in ['who works', 'who is working', "today's"]):
                 start_date = end_date = today
+            elif is_comprehensive_report:
+                # For comprehensive reports, default to current month
+                start_date = today.replace(day=1)  # First day of current month
+                end_date = today
+                logger.info(f"DEBUG: Comprehensive report - defaulting to current month: {start_date} to {end_date}")
             else:
                 # Default to last 7 days for general queries
                 start_date = today - timedelta(days=7)
@@ -3938,14 +4559,38 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
                 where_conditions.append(f"a.status IN ({placeholders})")
                 params.extend(status_filter)
         
-        # Determine if this is a comprehensive report request (should show all employees)
-        comprehensive_keywords = [
-            'attendance report', 'weekly report', 'monthly report', 'report for',
-            'attendance summary', 'all employees', 'everyone', 'complete report',
-            'attendance overview', 'weekly attendance', 'monthly attendance'
-        ]
+        # Use previously determined comprehensive report status
         
-        is_comprehensive_report = any(keyword in query_lower for keyword in comprehensive_keywords)
+        # Add fallback logic for edge cases
+        # Only trigger edge case for specific department mentions, not "all department" requests
+        if (not department and is_comprehensive_report and 
+            any(word in query_lower for word in ['department', 'dept']) and
+            not any(word in query_lower for word in ['all department', 'all departments', 'all attendance'])):
+            logger.warning(f"DEBUG: EDGE CASE - Specific department query but detection failed: '{query}'")
+            # This might be a case where department detection failed but user intended a specific department
+            # Return clarification instead of all departments
+            return {
+                "success": True,
+                "message": "I detected that you're asking for a department-specific attendance report, but I couldn't identify which department. Please specify: marketing, ramstudios, hr, it, construction, finance, or others.",
+                "response_type": "human_loop_question", 
+                "follow_up_questions": [
+                    "Which department are you asking about?",
+                    "Would you like attendance for all departments instead?"
+                ],
+                "conversation_state": {
+                    "pending_action": "attendance_query_with_department",
+                    "original_query": query,
+                    "query_analysis": {"has_department": False, "detected_date": None}
+                },
+                "filters_applied": {
+                    "employee_name": employee_name,
+                    "department": department,
+                    "status_filter": status_filter,
+                    "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                    "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+                },
+                "query_understood": query
+            }
         
         # Debug logging for comprehensive report detection
         logger.info(f"DEBUG: Comprehensive report detection:")
@@ -4063,7 +4708,78 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
                 date_range_str = f" from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
         
         # Create more informative summary for comprehensive reports
-        if is_comprehensive_report and not employee_name and not status_filter:
+        # Add department validation - only do all-department summary if no specific department was detected
+        if is_comprehensive_report and not employee_name and not status_filter and not department:
+            logger.info(f"DEBUG: All-department comprehensive report - no specific department detected")
+            # All department summary with human loop
+            dept_summary = {}
+            for record in results:
+                dept_name = record.get('department_name', 'Unknown')
+                if dept_name not in dept_summary:
+                    dept_summary[dept_name] = {'present': 0, 'absent': 0, 'leave': 0, 'total': 0}
+                
+                status = record.get('status', '').lower()
+                dept_summary[dept_name]['total'] += 1
+                
+                if status == 'present':
+                    dept_summary[dept_name]['present'] += 1
+                elif status in ['absent', 'sudden leave', 'medical leave']:
+                    dept_summary[dept_name]['absent'] += 1
+                elif 'leave' in status:
+                    dept_summary[dept_name]['leave'] += 1
+            
+            # Build department-wise summary message
+            summary = f"📊 **All Department Attendance Summary**{date_range_str}:\n\n"
+            
+            total_employees = 0
+            total_present = 0
+            
+            for dept, stats in sorted(dept_summary.items()):
+                if dept != 'Unknown' and stats['total'] > 0:
+                    present_rate = (stats['present'] / stats['total'] * 100) if stats['total'] > 0 else 0
+                    summary += f"**{dept}**: {stats['present']} present, {stats['absent']} absent, {stats['leave']} leave ({present_rate:.1f}%)\n"
+                    total_employees += stats['total']
+                    total_present += stats['present']
+            
+            overall_rate = (total_present / total_employees * 100) if total_employees > 0 else 0
+            summary += f"\n**Overall**: {total_present}/{total_employees} present ({overall_rate:.1f}%)"
+            
+            # Add human loop options for comprehensive reports
+            return {
+                "success": True,
+                "message": summary,
+                "response_type": "human_loop_question",
+                "data": results[:20],  # Limit data for performance
+                "total_records": total_records,
+                "unique_employees": unique_employees,
+                "unique_dates": unique_dates,
+                "status_breakdown": status_counts,
+                "is_comprehensive_report": is_comprehensive_report,
+                "department_summary": dept_summary,
+                "conversation_state": {
+                    "pending_action": "attendance_drill_down",
+                    "original_query": query,
+                    "date_range": {"start": start_date.strftime('%Y-%m-%d'), "end": end_date.strftime('%Y-%m-%d')},
+                    "available_departments": list(dept_summary.keys())
+                },
+                "follow_up_questions": [
+                    "Would you like details for a specific department?",
+                    "Should I show attendance trends over the past few months?",
+                    "Do you want to see only departments with attendance issues?",
+                    "Would you like to see individual employee attendance records?"
+                ],
+                "filters_applied": {
+                    "employee_name": employee_name,
+                    "department": department,
+                    "status_filter": status_filter,
+                    "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                    "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+                },
+                "query_understood": query
+            }
+        elif is_comprehensive_report and not employee_name and not status_filter and department:
+            # Department-specific comprehensive report (like "ramstudios attendance summary")
+            logger.info(f"DEBUG: Department-specific comprehensive report for {department}")
             summary_parts = [f"Attendance report for {unique_employees} employees"]
             if department:
                 summary_parts.append(f"in {department} department")
@@ -4073,6 +4789,40 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             
             if employees_with_records > 0 or employees_without_records > 0:
                 summary += f" {employees_with_records} employees have attendance records, {employees_without_records} employees have no records."
+            
+            # Add human loop for department-specific comprehensive reports too
+            if total_records > 10:  # Only for larger datasets
+                return {
+                    "success": True,
+                    "message": summary,
+                    "response_type": "human_loop_question",
+                    "data": results[:15],  # Limit data for performance
+                    "total_records": total_records,
+                    "unique_employees": unique_employees,
+                    "unique_dates": unique_dates,
+                    "status_breakdown": status_counts,
+                    "is_comprehensive_report": is_comprehensive_report,
+                    "conversation_state": {
+                        "pending_action": "attendance_drill_down",
+                        "original_query": query,
+                        "date_range": {"start": start_date.strftime('%Y-%m-%d'), "end": end_date.strftime('%Y-%m-%d')},
+                        "department": department
+                    },
+                    "follow_up_questions": [
+                        f"Would you like to see individual employee details for {department}?",
+                        f"Should I show attendance trends for {department} over time?",
+                        f"Do you want to see only absent employees from {department}?",
+                        "Would you like to compare this with other departments?"
+                    ],
+                    "filters_applied": {
+                        "employee_name": employee_name,
+                        "department": department,
+                        "status_filter": status_filter,
+                        "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                        "end_date": end_date.strftime('%Y-%m-%d') if end_date else None
+                    },
+                    "query_understood": query
+                }
         else:
             summary_parts = [f"Found {total_records} attendance records"]
             if employee_name:
@@ -4087,10 +4837,27 @@ def query_attendance_intelligent(query: str) -> Dict[str, Any]:
             status_summary = ", ".join([f"{count} {status.replace('No Record', 'No Record')}" for status, count in status_counts.items()])
             summary += f" Status breakdown: {status_summary}."
         
+        # Clean attendance notes to remove calendar references for AI processing
+        def clean_attendance_notes_for_ai(records):
+            """Remove calendar-related text from notes field for AI processing"""
+            cleaned_records = []
+            for record in records:
+                cleaned_record = record.copy()  # Create a copy to avoid modifying original
+                if 'notes' in cleaned_record and cleaned_record['notes']:
+                    note = cleaned_record['notes'].lower()
+                    # Remove calendar-related references that confuse the AI
+                    if any(phrase in note for phrase in ['marked via calendar', 'via calendar', 'marked via', 'calendar on']):
+                        cleaned_record['notes'] = ''  # Clear calendar-related notes
+                cleaned_records.append(cleaned_record)
+            return cleaned_records
+        
+        # Apply cleaning to remove calendar references from AI-facing data
+        cleaned_results = clean_attendance_notes_for_ai(results)
+        
         return {
             "success": True,
             "message": summary,
-            "data": results,
+            "data": cleaned_results,
             "total_records": total_records,
             "unique_employees": unique_employees,
             "unique_dates": unique_dates,
@@ -4424,13 +5191,30 @@ def _query_attendance_internal(query: str) -> Dict[str, Any]:
                     status_filter = [status]
                 break
         
-        # Default date range if none specified
+        # Default date range if none specified  
         if not start_date and not end_date:
             if any(word in query_lower for word in ['who works', 'who is working', "today's"]):
                 start_date = end_date = today
             else:
-                start_date = today - timedelta(days=7)
-                end_date = today
+                # Check if this is a comprehensive report query
+                comprehensive_keywords = [
+                    'attendance report', 'weekly report', 'monthly report', 'report for',
+                    'attendance summary', 'all employees', 'everyone', 'complete report',
+                    'attendance overview', 'weekly attendance', 'monthly attendance',
+                    'all department', 'all departments', 'all attendance', 'complete attendance',
+                    'attendance for all', 'total attendance', 'department summary',
+                    'all employees attendance', 'all employee attendance', 'everyone attendance', 'show all attendance'
+                ]
+                is_comprehensive_query = any(keyword in query_lower for keyword in comprehensive_keywords)
+                
+                if is_comprehensive_query:
+                    # For comprehensive reports, default to current month
+                    start_date = today.replace(day=1)  # First day of current month
+                    end_date = today
+                else:
+                    # Default to last 7 days for general queries
+                    start_date = today - timedelta(days=7)
+                    end_date = today
         
         # Build SQL query (same logic as main function)
         where_conditions = []
@@ -4469,7 +5253,11 @@ def _query_attendance_internal(query: str) -> Dict[str, Any]:
         comprehensive_keywords = [
             'attendance report', 'weekly report', 'monthly report', 'report for',
             'attendance summary', 'all employees', 'everyone', 'complete report',
-            'attendance overview', 'weekly attendance', 'monthly attendance'
+            'attendance overview', 'weekly attendance', 'monthly attendance',
+            # Add new all department patterns
+            'all department', 'all departments', 'all attendance', 'complete attendance',
+            'attendance for all', 'total attendance', 'department summary',
+            'all employees attendance', 'all employee attendance', 'everyone attendance', 'show all attendance'
         ]
         
         is_comprehensive_report = any(keyword in query_lower for keyword in comprehensive_keywords)
@@ -4516,7 +5304,24 @@ def _query_attendance_internal(query: str) -> Dict[str, Any]:
         
         # Add WHERE conditions if any
         if where_conditions:
-            base_query += " WHERE " + " AND ".join(where_conditions)
+            if is_comprehensive_report and not employee_name and not status_filter:
+                # For comprehensive reports with LEFT JOIN, move date conditions to ON clause or use OR NULL
+                date_conditions = []
+                other_conditions = []
+                
+                for i, condition in enumerate(where_conditions):
+                    if "a.attendance_date" in condition:
+                        # For LEFT JOIN, we want to include employees even if they have no attendance
+                        # So we modify the date condition to include NULL values
+                        date_conditions.append(f"({condition} OR a.attendance_date IS NULL)")
+                    else:
+                        other_conditions.append(condition)
+                
+                all_conditions = date_conditions + other_conditions
+                if all_conditions:
+                    base_query += " WHERE " + " AND ".join(all_conditions)
+            else:
+                base_query += " WHERE " + " AND ".join(where_conditions)
         
         # Add ORDER BY
         base_query += " ORDER BY a.attendance_date DESC, e.name ASC"
@@ -4663,7 +5468,7 @@ def summarize_attendance_intelligent(query: str) -> Dict[str, Any]:
             return {
                 "success": True,
                 "message": "No attendance data found matching your query. This could be a weekend, holiday, or the date range has no records.",
-                "insights": ["Consider checking a different date range or ensuring attendance has been marked."],
+                "insights": ["Consider checking a different date range or trying a recent date."],
                 "follow_up_questions": ["Would you like me to check recent attendance activity?"],
                 "data_scope": {"total_records": 0, "date_range": "No data"}
             }
@@ -6169,7 +6974,8 @@ async def chat_endpoint(message: ChatMessage):
                                         yield f"data: {json.dumps(text_response)}\n\n"
                                         final_response.append(text_response)
                                     
-                                elif response_type in ['form_request', 'employee_found_update_form', 'human_loop_question']:
+                                elif response_type in ['form_request', 'employee_found_update_form', 'human_loop_question', 
+                                                      'attendance_clarification', 'attendance_department_not_found', 'ambiguous_attendance_query']:
                                     
                                     logger.info(f"DEBUG: Creating {response_type} response")
                                     
@@ -6203,12 +7009,66 @@ async def chat_endpoint(message: ChatMessage):
                                             "conversation_state": conversation_state
                                         }
                                     
+                                    # Handle attendance clarification responses
+                                    elif response_type in ['attendance_clarification', 'attendance_department_not_found', 'ambiguous_attendance_query']:
+                                        # Store conversation state for attendance follow-up
+                                        human_loop_sent = True  # Flag to suppress redundant AI confirmation
+                                        logger.info(f"DEBUG: Handling attendance clarification - {response_type}")
+                                        
+                                        conversation_state = tool_result.get('conversation_state', {})
+                                        if conversation_state:
+                                            _store_conversation_state(thread_id, conversation_state)
+                                        
+                                        # Create attendance clarification response
+                                        if response_type == 'attendance_clarification':
+                                            # User gets options for date ranges
+                                            suggestions = tool_result.get('suggestions', {})
+                                            date_options = suggestions.get('date_options', [])
+                                            
+                                            form_response = {
+                                                "type": "attendance_clarification",
+                                                "content": tool_result.get('message', ''),
+                                                "follow_up_questions": tool_result.get('follow_up_questions', []),
+                                                "options": date_options,
+                                                "query_analysis": tool_result.get('query_analysis', {}),
+                                                "conversation_state": conversation_state
+                                            }
+                                        
+                                        elif response_type == 'attendance_department_not_found':
+                                            # User gets department suggestions
+                                            similar_depts = tool_result.get('similar_departments', [])
+                                            available_depts = tool_result.get('available_departments', [])
+                                            
+                                            form_response = {
+                                                "type": "attendance_department_selection",
+                                                "content": tool_result.get('message', ''),
+                                                "follow_up_questions": tool_result.get('follow_up_questions', []),
+                                                "searched_department": tool_result.get('searched_department', ''),
+                                                "similar_departments": similar_depts,
+                                                "available_departments": available_depts[:10],  # Limit to first 10
+                                                "conversation_state": conversation_state
+                                            }
+                                        
+                                        elif response_type == 'ambiguous_attendance_query':
+                                            # User gets general clarification options
+                                            clarifications = tool_result.get('suggested_clarifications', [])
+                                            
+                                            form_response = {
+                                                "type": "attendance_ambiguous_query",
+                                                "content": tool_result.get('message', ''),
+                                                "follow_up_questions": tool_result.get('follow_up_questions', []),
+                                                "clarification_options": clarifications,
+                                                "detected_intent": tool_result.get('detected_intent', ''),
+                                                "conversation_state": conversation_state
+                                            }
+                                    
                                     # Stream the response to frontend
                                     yield f"data: {json.dumps(form_response)}\n\n"
                                     final_response.append(form_response)
                                     
-                                    # Stop processing after form requests, but continue for human loop questions
-                                    if response_type in ['form_request', 'employee_found_update_form']:
+                                    # Stop processing after form requests and attendance clarifications (they require user input)
+                                    if response_type in ['form_request', 'employee_found_update_form', 
+                                                        'attendance_clarification', 'attendance_department_not_found', 'ambiguous_attendance_query']:
                                         yield f"data: [DONE]\n\n"
                                         return
                                     
