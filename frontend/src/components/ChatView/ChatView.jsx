@@ -7,16 +7,13 @@ import { apiService } from '../../services/api';
 const ChatView = ({ messages, setMessages }) => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [chipsHidden, setChipsHidden] = useState(false);
+  const [chipsHidden] = useState(false);
   const [isEmployeeFormOpen, setIsEmployeeFormOpen] = useState(false);
   const [employeeFormData, setEmployeeFormData] = useState(null);
   const [employeeFormAction, setEmployeeFormAction] = useState('');
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const chatContainerRef = useRef(null);
-  const [isMobile, setIsMobile] = useState(false);
-  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
-  const [originalViewportHeight, setOriginalViewportHeight] = useState(window.innerHeight);
 
   // Enhanced employee management intent detection
   const detectEmployeeManagementIntent = (message) => {
@@ -69,7 +66,6 @@ const ChatView = ({ messages, setMessages }) => {
     
     // Extract potential employee name from the message
     const extractNameFromMessage = (message) => {
-      const messageLower = message.toLowerCase();
       
       // Patterns to extract names from messages
       const namePatterns = [
@@ -157,7 +153,7 @@ const ChatView = ({ messages, setMessages }) => {
   };
 
   // Fetch employee data and show update form with pre-filled information
-  const fetchEmployeeDataAndShowForm = async (employeeName, originalMessage) => {
+  const fetchEmployeeDataAndShowForm = async (employeeName) => {
     try {
       // No loading message - just fetch data and show form
 
@@ -250,128 +246,12 @@ const ChatView = ({ messages, setMessages }) => {
     inputRef.current?.focus();
   }, []);
 
-  // Mobile detection and keyboard handling
-  useEffect(() => {
-    const checkIfMobile = () => {
-      const userAgent = navigator.userAgent || navigator.vendor || window.opera;
-      const isMobileDevice = /android|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase());
-      const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-      const isSmallScreen = window.innerWidth <= 768;
-      
-      return isMobileDevice || (isTouchDevice && isSmallScreen);
-    };
 
-    setIsMobile(checkIfMobile());
-    setOriginalViewportHeight(window.visualViewport?.height || window.innerHeight);
-  }, []);
 
-  // Simplified keyboard visibility detection (same as landing page)
-  useEffect(() => {
-    if (!isMobile) return;
-
-    const handleViewportChange = () => {
-      const vv = window.visualViewport;
-      const layoutH = window.innerHeight;
-      const vvH = vv?.height || layoutH;
-      const offsetTop = vv?.offsetTop || 0;
-      // Amount of the layout viewport occluded at the bottom (typically the keyboard height)
-      const occludedBottom = Math.max(layoutH - vvH - offsetTop, 0);
-      const heightDifference = Math.max(originalViewportHeight - vvH, 0);
-      const keyboardThreshold = 70; // more forgiving on iOS
-
-      const keyboardIsOpen = occludedBottom > keyboardThreshold || heightDifference > keyboardThreshold;
-      setIsKeyboardOpen(keyboardIsOpen);
-
-      // Publish CSS vars used by styles
-      document.documentElement.style.setProperty('--keyboard-occluded', `${occludedBottom}px`);
-      document.documentElement.style.setProperty('--keyboard-height', `${keyboardIsOpen ? Math.max(heightDifference, occludedBottom) : 0}px`);
-      document.documentElement.style.setProperty('--vv-offset-top', `${offsetTop}px`);
-    };
-
-    // Use visualViewport API if available (modern browsers)
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', handleViewportChange);
-      window.visualViewport.addEventListener('scroll', handleViewportChange);
-      return () => {
-        window.visualViewport.removeEventListener('resize', handleViewportChange);
-        window.visualViewport.removeEventListener('scroll', handleViewportChange);
-      };
-    } else {
-      // Fallback for older browsers
-      window.addEventListener('resize', handleViewportChange);
-      return () => {
-        window.removeEventListener('resize', handleViewportChange);
-      };
-    }
-  }, [isMobile, isKeyboardOpen, originalViewportHeight]);
-
-  // Simplified mobile input focus (same as landing page)
-  const handleMobileInputFocus = () => {
-    if (isMobile && inputRef.current) {
-      // Prevent zoom on iOS
-      inputRef.current?.setAttribute('readonly', 'readonly');
-      inputRef.current?.removeAttribute('readonly');
-      // Ensure the latest messages are visible when the keyboard opens
-      setTimeout(() => {
-        try {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-        } catch (_) {}
-      }, 50);
-    }
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (inputValue.trim() && !isLoading) {
-      // Enhanced keyboard hiding on mobile after sending message
-      if (isMobile && inputRef.current) {
-        const hideKeyboard = () => {
-          // Primary method: blur the input
-          inputRef.current.blur();
-          
-          // Secondary method: temporarily remove focus and disable input
-          inputRef.current.setAttribute('readonly', 'readonly');
-          inputRef.current.disabled = true;
-          
-          // Re-enable after a short delay
-          setTimeout(() => {
-            if (inputRef.current) {
-              inputRef.current.removeAttribute('readonly');
-              inputRef.current.disabled = false;
-            }
-          }, 100);
-          
-          // Force layout reflow to ensure keyboard dismissal
-          document.body.scrollTop = document.body.scrollTop;
-          
-          // Additional fallback: scroll to slightly change viewport
-          if (window.scrollY > 0) {
-            window.scrollTo({
-              top: window.scrollY - 1,
-              behavior: 'instant'
-            });
-            setTimeout(() => {
-              window.scrollTo({
-                top: window.scrollY + 1,
-                behavior: 'instant'
-              });
-            }, 50);
-          }
-        };
-        
-        hideKeyboard();
-        
-        // Additional check after delay to ensure keyboard is hidden
-        setTimeout(() => {
-          if (inputRef.current && document.activeElement === inputRef.current) {
-            inputRef.current.blur();
-            // Move focus to body as fallback
-            if (document.body.focus) {
-              document.body.focus();
-            }
-          }
-        }, 200);
-      }
       await sendMessage(inputValue);
     }
   };
@@ -710,9 +590,6 @@ const ChatView = ({ messages, setMessages }) => {
     sendMessage(command);
   };
 
-  const toggleChips = () => {
-    setChipsHidden(!chipsHidden);
-  };
 
   // Working quick actions - focused on queries and reports (attendance creation/updates not implemented)
   const chatSuggestionChips = [
@@ -750,9 +627,9 @@ const ChatView = ({ messages, setMessages }) => {
   );
 
   return (
-    <div 
+    <div
       ref={chatContainerRef}
-      className={`chat-container ${isMobile ? 'mobile' : ''} ${isKeyboardOpen ? 'keyboard-open' : ''}`}
+      className="chat-container"
     >
       {/* Header */}
       <div className="chat-header">
@@ -790,28 +667,16 @@ const ChatView = ({ messages, setMessages }) => {
           />
           
           <form onSubmit={handleSubmit} className="chat-input-wrapper">
-            <button
-              type="button"
-              className="chip-toggle-button"
-              onClick={toggleChips}
-              title="Toggle Suggestions"
-            >
-              💡
-            </button>
-            
             <input
               ref={inputRef}
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
-              onFocus={handleMobileInputFocus}
-              onTouchStart={handleMobileInputFocus}
               className="chat-input"
               placeholder="Ask a follow-up..."
               autoComplete="off"
               disabled={isLoading}
-              inputMode={isMobile ? "text" : undefined}
             />
             
             <button
